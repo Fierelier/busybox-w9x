@@ -1,0 +1,17 @@
+.config and include/autoconf.h are pre-generated from win9x_defconfig and
+checked into the repo, so build.sh doesn't need to compile kconfig's `conf`
+tool (which needs libintl.h/bison/flex on some hosts). If you change
+win9x_defconfig, regenerate both files with a host that has gettext/gcc
+(any Linux box is fine - the tool never touches the Win9x target):
+
+	for f in zconf.tab.c lex.zconf.c zconf.hash.c; do
+		test -f scripts/kconfig/$f || \
+			cp scripts/kconfig/${f}_shipped scripts/kconfig/$f
+	done
+	gcc -Iscripts/kconfig -o scripts/kconfig/conf \
+		scripts/kconfig/conf.c scripts/kconfig/zconf.tab.c
+	./scripts/gen_build_files.sh "$PWD" "$PWD"
+	KCONFIG_NOTIMESTAMP=1 srctree="$PWD" \
+		./scripts/kconfig/conf -D configs/win9x_defconfig Config.in < /dev/null
+
+Then commit the updated .config and include/autoconf.h.

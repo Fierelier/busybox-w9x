@@ -5,8 +5,9 @@ TOP="$(CDPATH= cd -- "$(dirname "$0")" && pwd)"
 cd "$TOP"
 
 find . -name '*.o' -delete
-rm -f .config .config.old include/autoconf.h scripts/kconfig/conf scripts/kconfig/conf.exe
-rm -f scripts/kconfig/zconf.tab.c scripts/kconfig/lex.zconf.c scripts/kconfig/zconf.hash.c
+rm -f include/applets.h include/usage.h
+find . -mindepth 2 -name Config.in -delete
+find . -mindepth 2 -name Kbuild -delete
 rm -f applets/usage applets/usage.exe applets/applet_tables applets/applet_tables.exe applets/usage_pod applets/usage_pod.exe
 rm -f include/BB_VER.h include/bbconfigopts.h include/bbconfigopts_bz2.h \
       include/common_bufsiz.h include/embedded_scripts.h \

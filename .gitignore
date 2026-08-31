@@ -2,6 +2,7 @@
 # Kbuild ignores
 #
 .*
+!.config
 *.o
 *.o.*
 *.a
