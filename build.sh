@@ -6,6 +6,11 @@ set -e
 TOP="$(CDPATH= cd -- "$(dirname "$0")" && pwd)"
 cd "$TOP"
 
+# used by scripts/embedded_scripts ($srctree/applets/busybox.mkscripts) -
+# a plain shell var read from the environment, not kconfig-related.
+srctree="$TOP"
+export srctree
+
 test -f include/autoconf.h || {
 	echo "include/autoconf.h missing - it should be checked into the repo." >&2
 	exit 1
