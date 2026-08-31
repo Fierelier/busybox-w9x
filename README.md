@@ -1,8 +1,6 @@
 This is an experimental fork of [busybox-w32](https://github.com/rmyorston/busybox-w32) made to run with Windows 95 (currently untested) and Windows 98. AI has been used.
 
-Note that the rest of this README contains some information linking to busybox-w32. **Do not bother the author of the original project with any issues stemming from this fork.**
-
-`ash` and a some of the other programs I tested seem to work fine. Use `build.sh` to build the project. `clean.sh` cleans the project. I recommend you use [mingw-lite](https://github.com/redpanda-cpp/mingw-lite). You can build right on Windows 9x if you want, but I recommend you have at least a Pentium 4.
+`ash` and some of the other programs I tested seem to work fine. Use `build.sh` to build the project. `clean.sh` cleans the project. I recommend you use [mingw-lite](https://github.com/redpanda-cpp/mingw-lite). You can build right on Windows 9x if you want, but I recommend you have at least a Pentium 4.
 
 * [Releases (i486) + sources](https://github.com/Fierelier/busybox-w9x/releases)
 * [Newest source .zip](https://codeload.github.com/Fierelier/busybox-w9x/zip/refs/heads/master)
@@ -24,6 +22,10 @@ Note that the rest of this README contains some information linking to busybox-w
 - **`libbb/appletlib.c`** — applet hardlink install falls back to `copy_file()` on `ENOENT`/no-hardlink filesystems (FAT/FAT32).
 - **`miscutils/drop.c`**, **`miscutils/inotifyd.c`** — lazyload SAFER-token and `ReadDirectoryChangesW` APIs (both NT-only), die cleanly with "not supported" instead of crashing on missing imports.
 - **`build.sh`, `clean.sh`, `vars.sh`, `configs/win9x_defconfig`** — new flat non-kconfig build path and matching defconfig for this target.
+
+Note that the rest of this README contains information concerning the original busybox-w32. **Do not bother the author of the original project with any issues stemming from this fork.**
+
+---
 
 ### Status
 
