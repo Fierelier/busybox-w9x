@@ -202,6 +202,14 @@ static void use_alt_buffer(int flag)
 	static HANDLE console_orig = INVALID_HANDLE_VALUE;
 	HANDLE console, h;
 
+#if ENABLE_MINGW_TIME32
+	/* switching the alt screen buffer reportedly locks a real Win9x
+	 * console into fullscreen DOS-box mode; not reproducible without
+	 * real hardware. Skip it - less/vi just won't restore the screen
+	 * on exit. Upgrade: find the actual trigger, drop this guard. */
+	return;
+#endif
+
 	if (flag) {
 		SECURITY_ATTRIBUTES sa;
 		CONSOLE_SCREEN_BUFFER_INFO sbi;
@@ -956,16 +964,12 @@ int FAST_FUNC winansi_fputc(int c, FILE *stream)
 int FAST_FUNC
 winansi_vsnprintf(char *buf, size_t size, const char *format, va_list list)
 {
-	size_t len;
-	va_list list2;
+	int len;
 
-	va_copy(list2, list);
-	len = _vsnprintf(NULL, 0, format, list2);
-	va_end(list2);
-	if (len < 0)
-		return -1;
-
-	_vsnprintf(buf, size, format, list);
+	/* old msvcrt's _vsnprintf(NULL,0,...) measure call always returns
+	 * -1 here (verified on Win9x hw), killing every formatted print.
+	 * Use the write's own return value; no caller passes size=0. */
+	len = _vsnprintf(buf, size, format, list);
 	buf[size-1] = '\0';
 	return len;
 }

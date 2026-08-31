@@ -3,6 +3,7 @@
  */
 #define MNTENT_PRIVATE
 #include "libbb.h"
+#include "lazyload.h"
 
 struct mntstate {
 	DWORD drives;
@@ -26,6 +27,7 @@ void FAST_FUNC init_mntdata(struct mntdata *data)
 
 static int fill_mntdata(struct mntdata *data, int index)
 {
+	DECLARE_PROC_ADDR(BOOL, GetVolumeNameForVolumeMountPoint, LPCSTR, LPSTR, DWORD);
 	char buf[PATH_MAX], drive[4] = "A:\\";
 
 	init_mntdata(data);
@@ -51,7 +53,8 @@ static int fill_mntdata(struct mntdata *data, int index)
 					buf[2] = '\0';
 				strcpy(data->mnt_fsname, buf);
 
-				GetVolumeNameForVolumeMountPoint(drive, data->mnt_volname, 50);
+				if (INIT_PROC_ADDR(kernel32, GetVolumeNameForVolumeMountPoint))
+					GetVolumeNameForVolumeMountPoint(drive, data->mnt_volname, 50);
 			}
 			break;
 		default:
@@ -90,6 +93,10 @@ struct mntent *getmntent(FILE *stream)
 {
 	struct mntstate *state = (struct mntstate *)stream;
 	struct mntent *entry = NULL;
+	DECLARE_PROC_ADDR(HANDLE, FindFirstVolume, LPSTR, DWORD);
+	DECLARE_PROC_ADDR(BOOL, FindNextVolume, HANDLE, LPSTR, DWORD);
+	DECLARE_PROC_ADDR(BOOL, GetVolumePathNamesForVolumeName, LPCSTR, LPSTR,
+			DWORD, PDWORD);
 
 	/* First we query each drive letter */
 	while (++state->index < 26) {
@@ -104,6 +111,13 @@ struct mntent *getmntent(FILE *stream)
 			}
 		}
 	}
+
+	/* volume-GUID mount points are Win2000+; Win9x only has drive
+	 * letters, already listed above. Nothing more to enumerate. */
+	if (!INIT_PROC_ADDR(kernel32, FindFirstVolume) ||
+			!INIT_PROC_ADDR(kernel32, FindNextVolume) ||
+			!INIT_PROC_ADDR(kernel32, GetVolumePathNamesForVolumeName))
+		return NULL;
 
 	/* Here we iterate through each volume and their mount points */
 	if (state->volh == INVALID_HANDLE_VALUE) {
@@ -173,8 +187,10 @@ struct mntent *getmntent(FILE *stream)
 int endmntent(FILE *stream)
 {
 	struct mntstate *state = (struct mntstate *)stream;
+	DECLARE_PROC_ADDR(BOOL, FindVolumeClose, HANDLE);
 
-	if (state->volh != INVALID_HANDLE_VALUE)
+	if (state->volh != INVALID_HANDLE_VALUE &&
+			INIT_PROC_ADDR(kernel32, FindVolumeClose))
 		FindVolumeClose(state->volh);
 	for (int i = 0; i < 26; ++i)
 		free(state->drive_vol_name[i]);

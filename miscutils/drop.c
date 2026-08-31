@@ -90,6 +90,12 @@ int drop_main(int argc UNUSED_PARAM, char **argv)
 	DECLARE_PROC_ADDR(BOOL, CreateProcessAsUserA, HANDLE, LPCSTR, LPSTR,
 			LPSECURITY_ATTRIBUTES, LPSECURITY_ATTRIBUTES, BOOL, DWORD,
 			LPVOID, LPCSTR, LPSTARTUPINFOA, LPPROCESS_INFORMATION);
+	DECLARE_PROC_ADDR(BOOL, SaferCreateLevel, DWORD, DWORD, DWORD,
+			SAFER_LEVEL_HANDLE *, LPVOID);
+	DECLARE_PROC_ADDR(BOOL, SaferComputeTokenFromLevel, SAFER_LEVEL_HANDLE,
+			HANDLE, PHANDLE, DWORD, LPVOID);
+	DECLARE_PROC_ADDR(BOOL, SetTokenInformation, HANDLE,
+			TOKEN_INFORMATION_CLASS, LPVOID, DWORD);
 
 	if (!INIT_PROC_ADDR(advapi32.dll, CreateProcessAsUserA))
 		bb_simple_error_msg_and_die("not supported");
@@ -98,7 +104,15 @@ int drop_main(int argc UNUSED_PARAM, char **argv)
 	 * Run a shell using a token with reduced privilege.  Hints from:
 	 *
 	 *    https://stackoverflow.com/questions/17765568/
+	 *
+	 * SAFER restricted-token API is XP+; Win9x has no token model,
+	 * so this applet dies same as the check above.
 	 */
+	if (!INIT_PROC_ADDR(advapi32.dll, SaferCreateLevel) ||
+			!INIT_PROC_ADDR(advapi32.dll, SaferComputeTokenFromLevel) ||
+			!INIT_PROC_ADDR(advapi32.dll, SetTokenInformation))
+		bb_simple_error_msg_and_die("not supported");
+
 	if (SaferCreateLevel(SAFER_SCOPEID_USER, SAFER_LEVELID_NORMALUSER,
 					SAFER_LEVEL_OPEN, &safer, NULL) &&
 			SaferComputeTokenFromLevel(safer, NULL, &token, 0, NULL)) {

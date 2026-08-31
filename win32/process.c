@@ -212,8 +212,20 @@ spawnveq(int mode, const char *path, char *const *argv, char *const *env)
 		new_path = xasprintf("%s.", path);
 	}
 
-	errno = 0;
-	ret = spawnve(mode, new_path ? new_path : path, new_argv, env);
+	{
+		/* must stay real CRT spawnve(), not raw CreateProcess() -
+		 * CRT serializes the fd table into STARTUPINFO's reserved
+		 * fields, which ash's forkshell/pipeline depends on (tested:
+		 * raw CreateProcess hangs every pipeline). Also needs the
+		 * same backslash conversion as argv[0] below, or spawnve()
+		 * can't find a file that demonstrably exists. */
+		char *exe_path = xstrdup(new_path ? new_path : path);
+
+		slash_to_bs(exe_path);
+		errno = 0;
+		ret = spawnve(mode, exe_path, new_argv, env);
+		free(exe_path);
+	}
 	if (errno == EINVAL && len > bb_arg_max())
 		errno = E2BIG;
 
@@ -271,16 +283,24 @@ create_detached_process(const char *prog, char *const *argv)
 	siStartInfo.hStdOutput = (HANDLE)_get_osfhandle(STDOUT_FILENO);
 	siStartInfo.dwFlags = STARTF_USESTDHANDLES;
 
-	success = CreateProcess((LPCSTR)prog,
-				(LPSTR)command,    /* command line */
-				NULL,              /* process security attributes */
-				NULL,              /* primary thread security attributes */
-				TRUE,              /* handles are inherited */
-				CREATE_NO_WINDOW,  /* creation flags */
-				NULL,              /* use parent's environment */
-				NULL,              /* use parent's current directory */
-				&siStartInfo,      /* STARTUPINFO pointer */
-				&piProcInfo);      /* receives PROCESS_INFORMATION */
+	{
+		/* same backslash conversion as mingw_popen()'s CreateProcess
+		 * call - prog can be the shared bb_busybox_exec_path */
+		char *bs_prog = xstrdup(prog);
+
+		slash_to_bs(bs_prog);
+		success = CreateProcess((LPCSTR)bs_prog,
+					(LPSTR)command,    /* command line */
+					NULL,              /* process security attributes */
+					NULL,              /* primary thread security attributes */
+					TRUE,              /* handles are inherited */
+					CREATE_NO_WINDOW,  /* creation flags */
+					NULL,              /* use parent's environment */
+					NULL,              /* use parent's current directory */
+					&siStartInfo,      /* STARTUPINFO pointer */
+					&piProcInfo);      /* receives PROCESS_INFORMATION */
+		free(bs_prog);
+	}
 
 	if (ENABLE_FEATURE_CLEAN_UP)
 		free(command);
@@ -865,9 +885,13 @@ int FAST_FUNC read_cmdline(char *buf, int col, unsigned pid, const char *comm)
  */
 static inline int process_architecture_matches_current(HANDLE process)
 {
+	DECLARE_PROC_ADDR(BOOL, IsWow64Process, HANDLE, PBOOL);
 	static BOOL current_is_wow = -1;
 	BOOL is_wow;
 
+	/* IsWow64Process is XP+; pre-XP has no WOW64, so same arch */
+	if (!INIT_PROC_ADDR(kernel32, IsWow64Process))
+		return 1;
 	if (current_is_wow == -1 &&
 	    !IsWow64Process (GetCurrentProcess(), &current_is_wow))
 		current_is_wow = -2;

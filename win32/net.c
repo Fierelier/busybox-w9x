@@ -1,4 +1,5 @@
 #include "libbb.h"
+#include "lazyload.h"
 
 int FAST_FUNC inet_aton(const char *cp, struct in_addr *inp)
 {
@@ -41,11 +42,113 @@ mingw_gethostbyaddr(const void *addr, socklen_t len, int type)
 }
 
 #undef getaddrinfo
+static int getaddrinfo_via_gethostbyname(const char *node, const char *service,
+			const struct addrinfo *hints, struct addrinfo **res)
+{
+	struct hostent *he;
+	struct addrinfo *head = NULL, *tail = NULL;
+	int family = hints ? hints->ai_family : AF_UNSPEC;
+	int i;
+
+	/* classic Winsock has no IPv6 stack, nothing to emulate it with.
+	 * AF_UNSPEC falls through to the IPv4 lookup. */
+	if (family == AF_INET6)
+		return EAI_FAMILY;
+	/* none of busybox's 3 getaddrinfo call sites ever pass a service -
+	 * they set the port separately afterward. Keep the emulation to what
+	 * is actually exercised rather than a full port/service parser. */
+	if (service)
+		return EAI_SERVICE;
+
+	he = gethostbyname(node);
+	if (!he || he->h_addrtype != AF_INET || !he->h_addr_list[0])
+		return EAI_NONAME;
+
+	for (i = 0; he->h_addr_list[i]; i++) {
+		struct addrinfo *ai = xzalloc(sizeof(*ai));
+		struct sockaddr_in *sin = xzalloc(sizeof(*sin));
+
+		sin->sin_family = AF_INET;
+		memcpy(&sin->sin_addr, he->h_addr_list[i], sizeof(sin->sin_addr));
+		ai->ai_family = AF_INET;
+		ai->ai_socktype = hints ? hints->ai_socktype : SOCK_STREAM;
+		ai->ai_addrlen = sizeof(*sin);
+		ai->ai_addr = (struct sockaddr *)sin;
+		/* ai_canonname deliberately left NULL: no caller reads it
+		 * (the one spot that would is commented out upstream) */
+		if (tail)
+			tail->ai_next = ai;
+		else
+			head = ai;
+		tail = ai;
+	}
+	if (!head)
+		return EAI_NONAME;
+	*res = head;
+	return 0;
+}
+
 int FAST_FUNC mingw_getaddrinfo(const char *node, const char *service,
 				const struct addrinfo *hints, struct addrinfo **res)
 {
+	DECLARE_PROC_ADDR(int, getaddrinfo, const char *, const char *,
+			const struct addrinfo *, struct addrinfo **);
+
 	init_winsock();
-	return getaddrinfo(node, service, hints, res);
+	if (INIT_PROC_ADDR(ws2_32.dll, getaddrinfo))
+		return getaddrinfo(node, service, hints, res);
+	return getaddrinfo_via_gethostbyname(node, service, hints, res);
+}
+
+#undef freeaddrinfo
+void FAST_FUNC mingw_freeaddrinfo(struct addrinfo *res)
+{
+	DECLARE_PROC_ADDR(void, freeaddrinfo, struct addrinfo *);
+
+	if (INIT_PROC_ADDR(ws2_32.dll, freeaddrinfo)) {
+		freeaddrinfo(res);
+		return;
+	}
+	while (res) {
+		struct addrinfo *next = res->ai_next;
+		free(res->ai_addr);
+		free(res);
+		res = next;
+	}
+}
+
+#undef getnameinfo
+int FAST_FUNC mingw_getnameinfo(const struct sockaddr *sa, socklen_t salen,
+			char *host, socklen_t hostlen,
+			char *serv, socklen_t servlen, int flags)
+{
+	DECLARE_PROC_ADDR(int, getnameinfo, const struct sockaddr *, socklen_t,
+			char *, socklen_t, char *, socklen_t, int);
+	const struct sockaddr_in *sin;
+	struct hostent *he;
+
+	if (INIT_PROC_ADDR(ws2_32.dll, getnameinfo))
+		return getnameinfo(sa, salen, host, hostlen, serv, servlen, flags);
+
+	/* same ceiling as getaddrinfo above - IPv4 only, no service-name
+	 * lookup (callers already pass NI_NUMERICSERV). */
+	if (sa->sa_family != AF_INET)
+		return EAI_FAMILY;
+	sin = (const struct sockaddr_in *)sa;
+
+	if (host && hostlen) {
+		he = (flags & NI_NUMERICHOST) ? NULL : gethostbyaddr(
+				(const char *)&sin->sin_addr, sizeof(sin->sin_addr), AF_INET);
+		if (he && he->h_name)
+			safe_strncpy(host, he->h_name, hostlen);
+		else if (flags & NI_NAMEREQD)
+			return EAI_NONAME;
+		else
+			safe_strncpy(host, inet_ntoa(sin->sin_addr), hostlen);
+	}
+	if (serv && servlen)
+		snprintf(serv, servlen, "%u", ntohs(sin->sin_port));
+	return 0;
 }
 
 int FAST_FUNC mingw_socket(int domain, int type, int protocol)

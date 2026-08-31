@@ -230,6 +230,7 @@ int inotifyd_main(int argc, char **argv)
 	return bb_got_signal;
 }
 #else /* ENABLE_PLATFORM_MINGW32 */
+#include "lazyload.h"
 /*
  * Order is important:  the indices match the values taken by the
  * Action member of the FILE_NOTIFY_INFORMATION structure, including
@@ -304,7 +305,14 @@ static void run_agent(const char *agent, FILE_NOTIFY_INFORMATION *info,
 
 static BOOL start_watch(struct watch *w)
 {
+	DECLARE_PROC_ADDR(BOOL, ReadDirectoryChangesW, HANDLE, LPVOID, DWORD,
+			BOOL, DWORD, LPDWORD, LPOVERLAPPED,
+			LPOVERLAPPED_COMPLETION_ROUTINE);
 	DWORD nret;
+
+	/* ReadDirectoryChangesW is NT-only; inotifyd is unsupported on Win9x */
+	if (!INIT_PROC_ADDR(kernel32, ReadDirectoryChangesW))
+		return FALSE;
 
 	memset(w->buf, 0, sizeof(w->buf));
 	memset(&w->overlap, 0, sizeof(OVERLAPPED));

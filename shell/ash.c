@@ -3136,8 +3136,10 @@ setwinxp(int on)
 static int console_state(void)
 {
 	DECLARE_PROC_ADDR(BOOL, ShowWindow, HWND, int);
+	DECLARE_PROC_ADDR(HWND, GetConsoleWindow, VOID);
 
-	if (INIT_PROC_ADDR(user32.dll, ShowWindow)) {
+	if (INIT_PROC_ADDR(user32.dll, ShowWindow) &&
+			INIT_PROC_ADDR(kernel32, GetConsoleWindow)) {
 		BOOL visible = IsWindowVisible(GetConsoleWindow());
 		BOOL iconified = IsIconic(GetConsoleWindow());
 
@@ -3148,8 +3150,13 @@ static int console_state(void)
 
 static void hide_console(int hide)
 {
+	DECLARE_PROC_ADDR(BOOL, ShowWindow, HWND, int);
+	DECLARE_PROC_ADDR(HWND, GetConsoleWindow, VOID);
+
 	// Switch console state if it's known and isn't the required state
-	if (console_state() == !hide)
+	if (console_state() == !hide &&
+			INIT_PROC_ADDR(user32.dll, ShowWindow) &&
+			INIT_PROC_ADDR(kernel32, GetConsoleWindow))
 		ShowWindow(GetConsoleWindow(), hide ?
 						(noiconify ? SW_HIDE : SW_MINIMIZE) : SW_NORMAL);
 }
@@ -5096,6 +5103,7 @@ static int waitone(int block, struct job *job)
 				sp->ps_status = status;
 				thisjob = jp;
 #if ENABLE_PLATFORM_MINGW32
+				mingw_forget_process(sp->ps_proc);
 				CloseHandle(sp->ps_proc);
 				sp->ps_proc = NULL;
 #endif
@@ -7674,6 +7682,10 @@ cvtnum(arith_t num, int flags)
 	char buf[len];
 
 	len = fmtstr(buf, len, ARITH_FMT, num);
+	/* fmtstr() can return -1; guard against that becoming a huge
+	 * unsigned size_t in memtodest() below. */
+	if (len < 0)
+		return 0;
 	return memtodest(buf, len, flags);
 }
 
@@ -9717,8 +9729,10 @@ test_exec(/*const char *fullname,*/ struct stat *statb)
 	 * and who knows what else, not just mode bits.
 	 * (faccessat2 syscall was added to Linux in May 14 2020)
 	 */
+#if !ENABLE_PLATFORM_MINGW32
 	mode_t stmode;
 	uid_t euid;
+#endif
 	enum { ANY_IX = S_IXUSR | S_IXGRP | S_IXOTH };
 
 	/* Do we already know with no extra syscalls? */
@@ -9729,6 +9743,12 @@ test_exec(/*const char *fullname,*/ struct stat *statb)
 	if ((statb->st_mode & ANY_IX) == ANY_IX)
 		return 1; /* anyone can execute */
 
+#if ENABLE_PLATFORM_MINGW32
+	/* our st_uid/st_gid are synthetic (DEFAULT_UID), not real Unix
+	 * ownership, so narrowing by uid/gid below is meaningless here.
+	 * Any execute bit set is enough. */
+	return statb->st_mode & ANY_IX;
+#else
 	/* Executability depends on our euid/egid/supplementary groups */
 	stmode = S_IXOTH;
 	euid = get_cached_euid(&groupinfo.euid);
@@ -9743,6 +9763,7 @@ test_exec(/*const char *fullname,*/ struct stat *statb)
 		stmode = S_IXGRP;
 
 	return statb->st_mode & stmode;
+#endif
 }
 
 /* Circular dep: find_command->find_builtin->builtintab[]->hashcmd->find_command */
@@ -17097,8 +17118,12 @@ spawn_forkshell(struct forkshell *fs, struct job *jp, union node *n, int mode)
 			strcmp(fs->n->ncmd.args->narg.text, "jobs") == 0;
 #endif
 	new = forkshell_prepare(fs);
-	if (new == NULL)
-		goto fail;
+	if (new == NULL) {
+		if (jp)
+			freejob(jp);
+		ash_msg_and_raise_error("unable to spawn shell: CreateFileMapping/MapViewOfFile error %u",
+					(unsigned)GetLastError());
+	}
 
 	new->mode = mode;
 	new->nprocs = jp == NULL ? 0 : jp->nprocs;
@@ -17111,10 +17136,9 @@ spawn_forkshell(struct forkshell *fs, struct job *jp, union node *n, int mode)
 	CloseHandle(new->hMapFile);
 	UnmapViewOfFile(new);
 	if (ret == -1) {
- fail:
 		if (jp)
 			freejob(jp);
-		ash_msg_and_raise_error("unable to spawn shell");
+		ash_msg_and_raise_error("unable to spawn shell: %s", strerror(errno));
 	}
 	forkparent(jp, n, mode, (HANDLE)ret);
 }

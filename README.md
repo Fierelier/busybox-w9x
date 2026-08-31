@@ -1,3 +1,29 @@
+This is an experimental fork of [busybox-w32](https://github.com/rmyorston/busybox-w32) made to run with Windows 95 (currently untested) and Windows 98. AI has been used.
+
+Note that the rest of this README contains some information linking to busybox-w32. **Do not bother the author of the original project with any issues stemming from this fork.**
+
+`ash` and a some of the other programs I tested seem to work fine. Use `build.sh` to build the project. `clean.sh` cleans the project. I recommend you use [mingw-lite](https://github.com/redpanda-cpp/mingw-lite). You can build right on Windows 9x if you want, but I recommend you have at least a Pentium 4.
+
+You can download i486 binaries here: **[releases](releases)**
+
+**I recommend you install [NANSI](https://www.kegel.com/nansi/)**, to gain some of the required ANSI codes.
+
+### Changes in busybox-w9x
+
+- **`win32/winansi.c`** — `winansi_vsnprintf()` no longer trusts the `_vsnprintf(NULL,0,...)` measure call (always returns -1 on old msvcrt, was killing every formatted print in the binary). Uses the real write's own return value instead.
+- **`shell/ash.c`** — `cvtnum()` guards against `fmtstr()` returning -1 (prevents signed-to-huge-unsigned `size_t` wraparound). Plus unrelated Win9x fixes: `console_state()`/`hide_console()` lazyload `GetConsoleWindow`, job-control calls `mingw_forget_process()` on child reap, `forkshell` failure path now raises a real error with `GetLastError()`/`errno` instead of a bare message, `SO_PEERCRED`-style euid/egid executable check skipped on mingw (own uid/gid model doesn't support ownership narrowing).
+- **`Config.in`** — new `MINGW_TIME32` config option, gates the whole old-msvcrt compat bundle.
+- **`include/libbb.h`** — `LL_FMT` picks `"I64"` only when `MINGW_TIME32` is off (so this bundle's own %lld handling isn't double-patched).
+- **`include/mingw.h`** — under `MINGW_TIME32`: redirects `time/ctime/gmtime/mktime` and `strtoll/strtoull` to `mingw_*` builtins (classic msvcrt lacks `_time32`-family and `_strtoi64`/`_strtoui64`); unconditional `mingw_ftruncate`, `mingw_getprocessid`/`mingw_forget_process` (GetProcessId is XP+), `freeaddrinfo`/`getnameinfo` macros.
+- **`win32/mingw.c`** — implements the above: pure FILETIME/SYSTEMTIME-based time functions (real 64-bit range to year 30828), portable `strtoull`/`strtoll`, Toolhelp32-based PID cache (since `GetProcessId` doesn't exist pre-XP), `mingw_ftruncate`.
+- **`win32/net.c`** — `getaddrinfo`/`freeaddrinfo`/`getnameinfo` fall back to `gethostbyname`/manual struct-building when ws2_32 lacks the real functions (pre-2000 Winsock, IPv4-only, no service-name lookup).
+- **`win32/mntent.c`** — volume-GUID mount-point enumeration (`FindFirstVolume` etc., Win2000+) becomes a no-op fallback instead of crashing on Win9x.
+- **`win32/process.c`** — `spawnve`/`CreateProcess` calls get a forward-slash→backslash conversion pass (old CRT/CreateProcess can't find files otherwise); `IsWow64Process` guarded (XP+); large comment justifying why `spawnve` can't be replaced by raw `CreateProcess` for ash's pipeline fd-passing.
+- **`win32/popen.c`** — same backslash conversion for its `CreateProcess` call.
+- **`libbb/appletlib.c`** — applet hardlink install falls back to `copy_file()` on `ENOENT`/no-hardlink filesystems (FAT/FAT32).
+- **`miscutils/drop.c`**, **`miscutils/inotifyd.c`** — lazyload SAFER-token and `ReadDirectoryChangesW` APIs (both NT-only), die cleanly with "not supported" instead of crashing on missing imports.
+- **`build.sh`, `clean.sh`, `vars.sh`, `configs/win9x_defconfig`** — new flat non-kconfig build path and matching defconfig for this target.
+
 ### Status
 
 Things may work for you, or may not.  Things may never work because of huge differences between Linux and Windows.  Or things may work in future, if you report the problem on [GitHub](https://github.com/rmyorston/busybox-w32) or [GitLab](https://gitlab.com/rmyorston/busybox-w32).  If you don't have an account on one of those or you'd prefer to communicate privately you can email [rmy@pobox.com](mailto:rmy@pobox.com).

@@ -133,6 +133,24 @@ config TIME64
 	(i.e. all 64bit archs and some selected 32bit archs (currently riscv
 	and x32)).
 
+config MINGW_TIME32
+	bool "Win9x/old-msvcrt.dll compatibility fixes"
+	default n
+	depends on PLATFORM_MINGW32
+	help
+	Bundle of fixes for linking/running against classic (pre-2000ish)
+	msvcrt.dll, e.g. real Windows 9x:
+	- time()/ctime()/gmtime()/localtime()/mktime() are implemented
+	  directly on Win32 FILETIME/SYSTEMTIME APIs instead of binding to
+	  msvcrt's own (32-bit-ABI-only) versions of those functions, which
+	  classic msvcrt.dll doesn't export in a usable form at all. This
+	  also gives genuine 64-bit range (up to FILETIME's year-30828
+	  limit), not just Y2038-safety.
+	- strtoll()/strtoull() use a builtin implementation instead of
+	  msvcrt's _strtoi64/_strtoui64, equally absent on old msvcrt.dll.
+	Enable this when targeting genuinely old Windows (e.g. Windows 9x);
+	leave off for current Windows.
+
 config PAM
 	bool "Support PAM (Pluggable Authentication Modules)"
 	default n

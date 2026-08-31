@@ -7,6 +7,7 @@
 #include <ntdef.h>
 #include <psapi.h>
 #include <ntsecapi.h>
+#include <tlhelp32.h>
 
 #if defined(__MINGW64_VERSION_MAJOR)
 #if ENABLE_GLOBBING
@@ -319,15 +320,13 @@ FILE * FAST_FUNC mingw_fopen (const char *filename, const char *otype)
 
 static ssize_t get_random_bytes(void *buf, ssize_t count)
 {
-	// 32-bit mingw-w64 didn't support RtlGenRandom until 7.0.0
-#if !defined(__MINGW64_VERSION_MAJOR) || \
-				(__MINGW64_VERSION_MAJOR < 7 && !defined(__MINGW64__))
+	/* SystemFunction036/RtlGenRandom is XP+; static import breaks
+	 * loading on Win9x even when the header declares it. Lazyload. */
 	DECLARE_PROC_ADDR(BOOLEAN, SystemFunction036, PVOID, ULONG);
 
 	if (!INIT_PROC_ADDR(advapi32.dll, SystemFunction036))
 		return -1;
-# define RtlGenRandom SystemFunction036
-#endif
+#define RtlGenRandom SystemFunction036
 	if (count < 0 || !RtlGenRandom(buf, count))
 		return -1;
 	return count;
@@ -611,13 +610,31 @@ static uid_t file_owner(HANDLE fh, struct mingw_stat *buf)
 		0x00, 0x00, 0x00, 0x00
 	};
 
+	DECLARE_PROC_ADDR(BOOL, OpenProcessToken, HANDLE, DWORD, PHANDLE);
+	DECLARE_PROC_ADDR(BOOL, GetTokenInformation, HANDLE, TOKEN_INFORMATION_CLASS,
+			LPVOID, DWORD, PDWORD);
+	DECLARE_PROC_ADDR(BOOL, DuplicateToken, HANDLE, SECURITY_IMPERSONATION_LEVEL,
+			PHANDLE);
+	DECLARE_PROC_ADDR(DWORD, GetSecurityInfo, HANDLE, SE_OBJECT_TYPE,
+			SECURITY_INFORMATION, PSID *, PSID *, PACL *, PACL *,
+			PSECURITY_DESCRIPTOR *);
+	DECLARE_PROC_ADDR(BOOL, EqualSid, PSID, PSID);
+	DECLARE_PROC_ADDR(BOOL, AccessCheck, PSECURITY_DESCRIPTOR, HANDLE, DWORD,
+			PGENERIC_MAPPING, PPRIVILEGE_SET, LPDWORD, LPDWORD, LPBOOL);
+
+	/* token/ACL APIs are NT-only; failing to load them here means
+	 * "everyone owns everything", same as the DEFAULT_UID fallback. */
+
 	/*  get SID of current user */
 	if (!initialised) {
 		HANDLE token;
 		DWORD ret = 0;
 
 		initialised = 1;
-		if (OpenProcessToken(GetCurrentProcess(),
+		if (INIT_PROC_ADDR(advapi32.dll, OpenProcessToken) &&
+				INIT_PROC_ADDR(advapi32.dll, GetTokenInformation) &&
+				INIT_PROC_ADDR(advapi32.dll, DuplicateToken) &&
+				OpenProcessToken(GetCurrentProcess(),
 				TOKEN_IMPERSONATE | TOKEN_QUERY | TOKEN_DUPLICATE |
 					STANDARD_RIGHTS_READ, &token)) {
 			GetTokenInformation(token, TokenUser, NULL, 0, &ret);
@@ -635,13 +652,15 @@ static uid_t file_owner(HANDLE fh, struct mingw_stat *buf)
 		return DEFAULT_UID;
 
 	/* get SID of file's owner */
-	if (GetSecurityInfo(fh, SE_FILE_OBJECT,
+	if (!INIT_PROC_ADDR(advapi32.dll, GetSecurityInfo) ||
+			GetSecurityInfo(fh, SE_FILE_OBJECT,
 			OWNER_SECURITY_INFORMATION | GROUP_SECURITY_INFORMATION |
 				DACL_SECURITY_INFORMATION,
 			&pSidOwner, NULL, &pDACL, NULL, &pSD) != ERROR_SUCCESS)
 		return 0;
 
-	if (EqualSid(pSidOwner, user->User.Sid)) {
+	if (INIT_PROC_ADDR(advapi32.dll, EqualSid) &&
+			EqualSid(pSidOwner, user->User.Sid)) {
 		uid = DEFAULT_UID;
 	} else if (memcmp(pSidOwner, nullsid, sizeof(nullsid)) == 0) {
 		uid = DEFAULT_UID;
@@ -664,7 +683,8 @@ static uid_t file_owner(HANDLE fh, struct mingw_stat *buf)
 		DWORD genericAccessRights = MAXIMUM_ALLOWED;
 		BOOL result;
 
-		if (AccessCheck(pSD, impersonate, genericAccessRights,
+		if (INIT_PROC_ADDR(advapi32.dll, AccessCheck) &&
+				AccessCheck(pSD, impersonate, genericAccessRights,
 				&mapping, &privileges, &privilegesLength,
 				&grantedAccess, &result)) {
 			if (result && (grantedAccess & 0x1200af) == 0x1200af) {
@@ -1178,11 +1198,58 @@ struct tm * FAST_FUNC gmtime_r(const time_t *timep, struct tm *result)
 }
 
 #undef localtime
-#if !defined(_WIN64) && __MINGW64_VERSION_MAJOR >= 10
+#if ENABLE_MINGW_TIME32
+/* shared by gmtime/localtime below - fills a struct tm from a FILETIME
+ * already in the desired zone (caller's choice). */
+static int fill_tm_from_filetime(const FILETIME *ft, struct tm *out)
+{
+	static const short cumdays[] = {0,31,59,90,120,151,181,212,243,273,304,334};
+	SYSTEMTIME st;
+	int leap;
+
+	if (!FileTimeToSystemTime(ft, &st))
+		return 0;
+	memset(out, 0, sizeof(*out));
+	out->tm_year = st.wYear - 1900;
+	out->tm_mon = st.wMonth - 1;
+	out->tm_mday = st.wDay;
+	out->tm_hour = st.wHour;
+	out->tm_min = st.wMinute;
+	out->tm_sec = st.wSecond;
+	out->tm_wday = st.wDayOfWeek;
+	leap = (st.wYear % 4 == 0 && (st.wYear % 100 != 0 || st.wYear % 400 == 0));
+	out->tm_yday = cumdays[st.wMonth - 1] + st.wDay - 1 +
+			(leap && st.wMonth > 2 ? 1 : 0);
+	return 1;
+}
+
+/* pure Win32 FILETIME/SYSTEMTIME implementation, avoids msvcrt's
+ * 32-bit-only localtime() ABI (see mingw_time() below). */
+#elif !defined(_WIN64) && __MINGW64_VERSION_MAJOR >= 10
 # define localtime(t) _localtime64(t)
 #endif
 struct tm * FAST_FUNC mingw_localtime(const time_t *timep)
 {
+#if ENABLE_MINGW_TIME32
+	static struct tm result;
+	struct timespec ts;
+	FILETIME ft, lft;
+	TIME_ZONE_INFORMATION tzi;
+
+	ts.tv_sec = *timep;
+	ts.tv_nsec = 0;
+	timespec_to_filetime(ts, &ft);
+	if (!FileTimeToLocalFileTime(&ft, &lft) ||
+			!fill_tm_from_filetime(&lft, &result)) {
+		ts.tv_sec = 0;
+		timespec_to_filetime(ts, &ft);
+		if (!FileTimeToLocalFileTime(&ft, &lft) ||
+				!fill_tm_from_filetime(&lft, &result))
+			return NULL;
+	}
+	result.tm_isdst = (GetTimeZoneInformation(&tzi) == TIME_ZONE_ID_DAYLIGHT) ? 1 : 0;
+	return &result;
+#else
 	struct tm *tm = localtime(timep);
 	time_t epoch = 0;
 
@@ -1190,6 +1257,7 @@ struct tm * FAST_FUNC mingw_localtime(const time_t *timep)
 		tm = localtime(&epoch);
 	}
 	return tm;
+#endif
 }
 
 struct tm * FAST_FUNC localtime_r(const time_t *timep, struct tm *result)
@@ -1245,17 +1313,334 @@ int FAST_FUNC mingw_rename(const char *pold, const char *pnew)
 	return -1;
 }
 
+/* mingw-w64's ftruncate64() pulls in NTFS fast-extend symbols (Win2000+)
+ * we never need. Plain SetFilePointer+SetEndOfFile is its own fallback
+ * anyway, and the OS zero-fills bytes exposed by extending a file. */
+int FAST_FUNC mingw_ftruncate(int fd, off64_t length)
+{
+	HANDLE h = (HANDLE)_get_osfhandle(fd);
+	LONG lo = (LONG)(length & 0xffffffff);
+	LONG hi = (LONG)(length >> 32);
+
+	if (h == INVALID_HANDLE_VALUE) {
+		errno = EBADF;
+		return -1;
+	}
+	if (SetFilePointer(h, lo, &hi, FILE_BEGIN) == INVALID_SET_FILE_POINTER &&
+			GetLastError() != NO_ERROR) {
+		errno = EINVAL;
+		return -1;
+	}
+	if (!SetEndOfFile(h)) {
+		errno = EINVAL;
+		return -1;
+	}
+	return 0;
+}
+
+#undef GetProcessId
+struct pid_cache_entry {
+	HANDLE h;
+	DWORD pid;
+};
+static struct pid_cache_entry *pid_cache;
+static int pid_cache_len, pid_cache_cap;
+
+void FAST_FUNC pid_cache_add(HANDLE h, DWORD pid)
+{
+	if (pid_cache_len == pid_cache_cap) {
+		pid_cache_cap = pid_cache_cap ? pid_cache_cap * 2 : 16;
+		pid_cache = xrealloc(pid_cache, sizeof(*pid_cache) * pid_cache_cap);
+	}
+	pid_cache[pid_cache_len].h = h;
+	pid_cache[pid_cache_len].pid = pid;
+	pid_cache_len++;
+}
+
+static DWORD pid_cache_lookup(HANDLE h)
+{
+	int i;
+
+	for (i = 0; i < pid_cache_len; i++)
+		if (pid_cache[i].h == h)
+			return pid_cache[i].pid;
+	return 0;
+}
+
+/* call when a HANDLE tracked via GetProcessId is closed - handle values
+ * get reused, so a stale entry could misattribute a pid. */
+void FAST_FUNC mingw_forget_process(HANDLE h)
+{
+	int i;
+
+	for (i = 0; i < pid_cache_len; i++) {
+		if (pid_cache[i].h == h) {
+			pid_cache[i] = pid_cache[--pid_cache_len];
+			return;
+		}
+	}
+}
+
+static DWORD find_pid_via_toolhelp(HANDLE process)
+{
+	FILETIME crTime, exTime, keTime, usTime;
+	HANDLE snap;
+	PROCESSENTRY32 pe;
+	DWORD found = 0;
+
+	if (!GetProcessTimes(process, &crTime, &exTime, &keTime, &usTime))
+		return 0;
+
+	snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+	if (snap == INVALID_HANDLE_VALUE)
+		return 0;
+
+	pe.dwSize = sizeof(pe);
+	if (Process32First(snap, &pe)) {
+		do {
+			HANDLE cand = OpenProcess(PROCESS_QUERY_INFORMATION,
+						FALSE, pe.th32ProcessID);
+			if (cand) {
+				FILETIME c2, e2, k2, u2;
+
+				/* exact FILETIME (100ns resolution) match on
+				 * creation time is effectively collision-proof */
+				if (GetProcessTimes(cand, &c2, &e2, &k2, &u2) &&
+						c2.dwLowDateTime == crTime.dwLowDateTime &&
+						c2.dwHighDateTime == crTime.dwHighDateTime)
+					found = pe.th32ProcessID;
+				CloseHandle(cand);
+			}
+		} while (!found && Process32Next(snap, &pe));
+	}
+	CloseHandle(snap);
+	return found;
+}
+
+DWORD FAST_FUNC mingw_getprocessid(HANDLE process)
+{
+	DECLARE_PROC_ADDR(DWORD, GetProcessId, HANDLE);
+	DWORD pid;
+
+	if (INIT_PROC_ADDR(kernel32, GetProcessId))
+		return GetProcessId(process);
+
+	/* GetProcessId is XP+; no direct handle->pid call pre-XP. Resolve
+	 * via Toolhelp32 (introduced for Win95) by matching this handle's
+	 * creation timestamp against running processes, and cache it -
+	 * some callers ask again after the process has already exited. */
+	pid = pid_cache_lookup(process);
+	if (pid)
+		return pid;
+
+	pid = find_pid_via_toolhelp(process);
+	if (pid) {
+		pid_cache_add(process, pid);
+		return pid;
+	}
+
+	/* Toolhelp32 lookup failed (process already gone and not cached,
+	 * or Toolhelp32 itself unavailable) - fall back to a stable but
+	 * fake surrogate rather than 0, so wait loops still see a nonzero
+	 * id instead of silently dropping the event (the original bug).
+	 * kill()-by-this-surrogate won't work, same known ceiling as before,
+	 * but this path should be rare now that spawn time always resolves
+	 * and caches the real pid while the process is still alive. */
+	return (DWORD)((intptr_t)process & 0x7fffffff);
+}
+#define GetProcessId mingw_getprocessid
+
+#if ENABLE_MINGW_TIME32
+static unsigned long long strtoull_generic(const char *nptr, char **endptr,
+			int base, int *neg)
+{
+	const char *s = nptr;
+	unsigned long long acc = 0;
+	unsigned long long cutoff;
+	int cutlim;
+	int any = 0, overflow = 0;
+
+	while (isspace((unsigned char)*s))
+		s++;
+
+	*neg = 0;
+	if (*s == '+')
+		s++;
+	else if (*s == '-') {
+		*neg = 1;
+		s++;
+	}
+
+	if ((base == 0 || base == 16) && s[0] == '0' &&
+			(s[1] == 'x' || s[1] == 'X') &&
+			isxdigit((unsigned char)s[2])) {
+		s += 2;
+		base = 16;
+	} else if (base == 0) {
+		base = (s[0] == '0') ? 8 : 10;
+	}
+
+	cutoff = ULLONG_MAX / (unsigned long long)base;
+	cutlim = ULLONG_MAX % (unsigned long long)base;
+
+	for (; ; s++) {
+		int c = (unsigned char)*s;
+		int digit;
+
+		if (isdigit(c))
+			digit = c - '0';
+		else if (isalpha(c))
+			digit = tolower(c) - 'a' + 10;
+		else
+			break;
+		if (digit >= base)
+			break;
+
+		any = 1;
+		if (overflow || acc > cutoff ||
+				(acc == cutoff && digit > cutlim)) {
+			overflow = 1;
+		} else {
+			acc = acc * (unsigned long long)base + (unsigned)digit;
+		}
+	}
+
+	if (overflow) {
+		acc = ULLONG_MAX;
+		errno = ERANGE;
+	}
+	if (endptr)
+		*endptr = (char *)(any ? s : nptr);
+	return acc;
+}
+
+/* portable strtoull/strtoll - old msvcrt.dll has no _strtoi64/_strtoui64
+ * for mingw-w64 to alias these to. */
+unsigned long long FAST_FUNC mingw_strtoull(const char *nptr, char **endptr, int base)
+{
+	int neg;
+	unsigned long long acc = strtoull_generic(nptr, endptr, base, &neg);
+	/* POSIX: a leading '-' is allowed, result is the negation (mod 2^64) */
+	return neg ? (0ULL - acc) : acc;
+}
+
+long long FAST_FUNC mingw_strtoll(const char *nptr, char **endptr, int base)
+{
+	int neg;
+	unsigned long long acc = strtoull_generic(nptr, endptr, base, &neg);
+
+	if (neg) {
+		if (acc > (unsigned long long)LLONG_MAX + 1ULL) {
+			errno = ERANGE;
+			return LLONG_MIN;
+		}
+		return -(long long)acc;
+	}
+	if (acc > (unsigned long long)LLONG_MAX) {
+		errno = ERANGE;
+		return LLONG_MAX;
+	}
+	return (long long)acc;
+}
+
+/* pure Win32 FILETIME time implementation, bypasses msvcrt's
+ * time/ctime/gmtime/mktime - disassembly confirms those are 32-bit-only
+ * at the ABI level. Ceiling: mktime() below needs valid tm fields,
+ * SystemTimeToFileTime rejects e.g. day 32 (no glibc-style normalizing). */
+time_t FAST_FUNC mingw_time(time_t *t)
+{
+	FILETIME ft;
+	struct timespec ts;
+	time_t now;
+
+	GetSystemTimeAsFileTime(&ft);
+	ts = filetime_to_timespec(&ft);
+	now = ts.tv_sec;
+	if (t)
+		*t = now;
+	return now;
+}
+
+struct tm * FAST_FUNC mingw_gmtime(const time_t *t)
+{
+	static struct tm result;
+	struct timespec ts;
+	FILETIME ft;
+
+	ts.tv_sec = *t;
+	ts.tv_nsec = 0;
+	timespec_to_filetime(ts, &ft);
+	if (!fill_tm_from_filetime(&ft, &result))
+		return NULL;
+	return &result;
+}
+
+time_t FAST_FUNC mingw_mktime(struct tm *tm)
+{
+	SYSTEMTIME st;
+	FILETIME lft, ft;
+	struct timespec ts;
+	struct tm *norm;
+	time_t result;
+
+	memset(&st, 0, sizeof(st));
+	st.wYear = tm->tm_year + 1900;
+	st.wMonth = tm->tm_mon + 1;
+	st.wDay = tm->tm_mday;
+	st.wHour = tm->tm_hour;
+	st.wMinute = tm->tm_min;
+	st.wSecond = tm->tm_sec;
+
+	if (!SystemTimeToFileTime(&st, &lft) ||
+			!LocalFileTimeToFileTime(&lft, &ft))
+		return (time_t)-1;
+
+	ts = filetime_to_timespec(&ft);
+	result = ts.tv_sec;
+
+	/* mktime() normalizes the caller's struct tm (wday, yday, isdst,
+	 * and any overflowed fields) - reuse localtime() for consistent,
+	 * correctly zone-adjusted values instead of recomputing separately */
+	norm = mingw_localtime(&result);
+	if (norm)
+		*tm = *norm;
+
+	return result;
+}
+
+char * FAST_FUNC mingw_ctime(const time_t *t)
+{
+	static char buf[40];
+	static const char days[] = "Sun\0Mon\0Tue\0Wed\0Thu\0Fri\0Sat";
+	static const char months[] = "Jan\0Feb\0Mar\0Apr\0May\0Jun\0Jul\0Aug\0Sep\0Oct\0Nov\0Dec";
+	struct tm *tm = mingw_localtime(t);
+
+	if (!tm)
+		return NULL;
+
+	/* classic ctime() assumes a 4-digit year; ours can exceed that
+	 * with the wider FILETIME range, so use a bigger buffer. */
+	snprintf(buf, sizeof(buf), "%.3s %.3s%3d %02d:%02d:%02d %d\n",
+			days + tm->tm_wday * 4, months + tm->tm_mon * 4,
+			tm->tm_mday, tm->tm_hour, tm->tm_min, tm->tm_sec,
+			tm->tm_year + 1900);
+	return buf;
+}
+#endif
+
 static char *gethomedir(void)
 {
 	static char *buf = NULL;
 	DECLARE_PROC_ADDR(BOOL, GetUserProfileDirectoryA, HANDLE, LPSTR, LPDWORD);
+	DECLARE_PROC_ADDR(BOOL, OpenProcessToken, HANDLE, DWORD, PHANDLE);
 
 	if (!buf) {
 		DWORD len = PATH_MAX;
 		HANDLE h;
 
 		buf = xzalloc(len);
-		if (OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &h)) {
+		if (INIT_PROC_ADDR(advapi32.dll, OpenProcessToken) &&
+				OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &h)) {
 			if (INIT_PROC_ADDR(userenv.dll, GetUserProfileDirectoryA)) {
 				GetUserProfileDirectoryA(h, buf, &len);
 				bs_to_slash(buf);
@@ -1302,10 +1687,14 @@ char *get_user_name(void)
 int
 elevation_state(void)
 {
+	DECLARE_PROC_ADDR(BOOL, OpenProcessToken, HANDLE, DWORD, PHANDLE);
+	DECLARE_PROC_ADDR(BOOL, GetTokenInformation, HANDLE, TOKEN_INFORMATION_CLASS,
+			LPVOID, DWORD, PDWORD);
 	int elevated = FALSE;
 	int enabled = TRUE;
 	HANDLE h;
 #if ENABLE_DROP || ENABLE_CDROP || ENABLE_PDROP
+	DECLARE_PROC_ADDR(BOOL, CheckTokenMembership, HANDLE, PSID, PBOOL);
 	BOOL admin_enabled = TRUE;
 	unsigned char admin[16] = {
 		0x01, 0x02, 0x00, 0x00,
@@ -1315,7 +1704,11 @@ elevation_state(void)
 	};
 #endif
 
-	if (OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &h)) {
+	/* UAC/token model is NT-only; "not elevated" is the right answer
+	 * when it doesn't exist. */
+	if (INIT_PROC_ADDR(advapi32.dll, OpenProcessToken) &&
+			INIT_PROC_ADDR(advapi32.dll, GetTokenInformation) &&
+			OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &h)) {
 		TOKEN_ELEVATION elevation = { 0 };
 		DWORD size;
 
@@ -1326,7 +1719,8 @@ elevation_state(void)
 	}
 
 #if ENABLE_DROP || ENABLE_CDROP || ENABLE_PDROP
-	if (CheckTokenMembership(NULL, (PSID)admin, &admin_enabled))
+	if (INIT_PROC_ADDR(advapi32.dll, CheckTokenMembership) &&
+			CheckTokenMembership(NULL, (PSID)admin, &admin_enabled))
 		enabled = admin_enabled != 0;
 #endif
 

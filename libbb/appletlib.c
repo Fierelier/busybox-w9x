@@ -825,7 +825,14 @@ static void install_links(const char *busybox, int use_symbolic_links,
 		//		use_symbolic_links ? "sym" : "", fpc);
 		rc = lf(busybox, fpc);
 		if (rc != 0 && errno != EEXIST) {
-			bb_simple_perror_msg(fpc);
+			if (lf == link) {
+				/* hardlinks unsupported on FAT/FAT32 - fall
+				 * back to a plain copy. copy_file() reports
+				 * its own error on failure. */
+				copy_file(busybox, fpc, FILEUTILS_PRESERVE_STATUS);
+			} else {
+				bb_simple_perror_msg(fpc);
+			}
 		}
 		free(fpc);
 		while (*appname++ != '\0')

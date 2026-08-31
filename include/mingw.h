@@ -140,6 +140,43 @@ sighandler_t winansi_signal(int signum, sighandler_t handler);
 #undef fseeko
 #define fseeko(f,o,w) fseek(f,o,w)
 
+#undef ftruncate
+int mingw_ftruncate(int fd, off64_t length) FAST_FUNC;
+#define ftruncate mingw_ftruncate
+
+/* GetProcessId is XP+, absent on Win9x. Lazyload once, redirect every
+ * caller via macro. 0 on failure matches GetProcessId's own contract. */
+DWORD mingw_getprocessid(HANDLE process) FAST_FUNC;
+void mingw_forget_process(HANDLE h) FAST_FUNC;
+#define GetProcessId mingw_getprocessid
+
+#if ENABLE_MINGW_TIME32
+/* old msvcrt.dll has no _strtoi64/_strtoui64 for strtoll/strtoull to
+ * alias to - use a portable builtin instead */
+#undef strtoll
+#undef strtoull
+long long mingw_strtoll(const char *nptr, char **endptr, int base) FAST_FUNC;
+unsigned long long mingw_strtoull(const char *nptr, char **endptr, int base) FAST_FUNC;
+#define strtoll mingw_strtoll
+#define strtoull mingw_strtoull
+
+/* mingw-w64's time/ctime/etc wrappers call _time32/_ctime32/..., which
+ * old msvcrt.dll never had. Bind to its plain undecorated exports instead.
+ * (localtime has its own mingw_localtime() wrapper below.) */
+#undef time
+#undef ctime
+#undef gmtime
+#undef mktime
+time_t mingw_time(time_t *t) FAST_FUNC;
+char *mingw_ctime(const time_t *t) FAST_FUNC;
+struct tm *mingw_gmtime(const time_t *t) FAST_FUNC;
+time_t mingw_mktime(struct tm *tm) FAST_FUNC;
+#define time mingw_time
+#define ctime mingw_ctime
+#define gmtime mingw_gmtime
+#define mktime mingw_mktime
+#endif
+
 int fdprintf(int fd, const char *format, ...);
 FILE* mingw_fopen(const char *filename, const char *mode) FAST_FUNC;
 int mingw_rename(const char*, const char*) FAST_FUNC;
@@ -295,6 +332,10 @@ int mingw_getpeername(int fd, struct sockaddr *sa, socklen_t *sz) FAST_FUNC;
 int mingw_gethostname(char *host, int namelen) FAST_FUNC;
 int mingw_getaddrinfo(const char *node, const char *service,
 			const struct addrinfo *hints, struct addrinfo **res) FAST_FUNC;
+void mingw_freeaddrinfo(struct addrinfo *res) FAST_FUNC;
+int mingw_getnameinfo(const struct sockaddr *sa, socklen_t salen,
+			char *host, socklen_t hostlen,
+			char *serv, socklen_t servlen, int flags) FAST_FUNC;
 struct hostent *mingw_gethostbyaddr(const void *addr, socklen_t len, int type) FAST_FUNC;
 
 #define socket mingw_socket
@@ -308,6 +349,8 @@ struct hostent *mingw_gethostbyaddr(const void *addr, socklen_t len, int type) F
 #define getpeername mingw_getpeername
 #define gethostname mingw_gethostname
 #define getaddrinfo mingw_getaddrinfo
+#define freeaddrinfo mingw_freeaddrinfo
+#define getnameinfo mingw_getnameinfo
 #define gethostbyaddr mingw_gethostbyaddr
 
 /*

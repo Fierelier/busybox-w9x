@@ -248,7 +248,13 @@ static int mingw_popen_internal(pipe_data *p, const char *exe,
 	siStartInfo.wShowWindow = SW_HIDE;
 	siStartInfo.dwFlags = STARTF_USESTDHANDLES|STARTF_USESHOWWINDOW;
 
-	success = CreateProcess((LPCSTR)exe,
+	{
+		/* same defensive backslash conversion as ShellExecuteEx()
+		 * in mingw.c - exe can be the shared bb_busybox_exec_path. */
+		char *bs_exe = xstrdup(exe);
+
+		slash_to_bs(bs_exe);
+		success = CreateProcess((LPCSTR)bs_exe,
 				(LPSTR)cmd,        /* command line */
 				NULL,              /* process security attributes */
 				NULL,              /* primary thread security attributes */
@@ -258,6 +264,8 @@ static int mingw_popen_internal(pipe_data *p, const char *exe,
 				NULL,              /* use parent's current directory */
 				&siStartInfo,      /* STARTUPINFO pointer */
 				&p->piProcInfo);   /* receives PROCESS_INFORMATION */
+		free(bs_exe);
+	}
 
 	if ( !success ) {
 		goto finito;
