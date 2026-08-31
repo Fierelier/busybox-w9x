@@ -7,6 +7,12 @@ This is an experimental fork of [busybox-w32](https://github.com/rmyorston/busyb
 
 **I recommend you install [NANSI](https://www.kegel.com/nansi/)**, to gain some of the required ANSI codes.
 
+### Known issues
+
+- `ls -lh` shows weird file size units
+- `less` makes the window go fullscreen with ALT+ENTER disabled (at least under NANSI)
+- ...
+
 ### Changes in busybox-w9x
 
 - **`win32/winansi.c`** — `winansi_vsnprintf()` no longer trusts the `_vsnprintf(NULL,0,...)` measure call (always returns -1 on old msvcrt, was killing every formatted print in the binary). Uses the real write's own return value instead.
