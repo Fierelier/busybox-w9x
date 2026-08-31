@@ -4,7 +4,8 @@ Note that the rest of this README contains some information linking to busybox-w
 
 `ash` and a some of the other programs I tested seem to work fine. Use `build.sh` to build the project. `clean.sh` cleans the project. I recommend you use [mingw-lite](https://github.com/redpanda-cpp/mingw-lite). You can build right on Windows 9x if you want, but I recommend you have at least a Pentium 4.
 
-You can download i486 binaries here: **[releases](releases)**
+* [Releases (i486) + sources](https://github.com/Fierelier/busybox-w9x/releases)
+* [Newest source .zip](https://codeload.github.com/Fierelier/busybox-w9x/zip/refs/heads/master)
 
 **I recommend you install [NANSI](https://www.kegel.com/nansi/)**, to gain some of the required ANSI codes.
 
