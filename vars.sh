@@ -47,7 +47,7 @@ concurrent() {
 		concurrent_jc_dump
 		JOBS=$(concurrent_jc_get)
 		while [ $JOBS -gt $J ]; do
-			sleep 1
+			sleep 0.2
 			concurrent_jc_dump
 			JOBS=$(concurrent_jc_get)
 		done
