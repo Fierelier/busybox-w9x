@@ -27,6 +27,10 @@ This is an experimental fork of [busybox-w32](https://github.com/rmyorston/busyb
 - **`win32/popen.c`** — same backslash conversion for its `CreateProcess` call.
 - **`libbb/appletlib.c`** — applet hardlink install falls back to `copy_file()` on `ENOENT`/no-hardlink filesystems (FAT/FAT32).
 - **`miscutils/drop.c`**, **`miscutils/inotifyd.c`** — lazyload SAFER-token and `ReadDirectoryChangesW` APIs (both NT-only), die cleanly with "not supported" instead of crashing on missing imports.
+- **`win32/compat9x.c`**, **`include/mingw.h`** — lazyloaded fallbacks for kernel32 exports missing on Windows 95: `GetSystemTimeAsFileTime`, `GetFileAttributesExA`, `GetProcessTimes`, `GetDiskFreeSpaceEx`, `LockFileEx`, `CreateRemoteThread`.
+- **`include/libbb.h`** — `LL_FMT` uses `"I64"` on msvcrt even with `MINGW_TIME32` (fixes `ls -lh` units).
+- **`win32/mingw.c`**, **`include/mingw.h`** — `time_t` is always 64-bit under `MINGW_TIME32`; `mingw_time()` uses `GetSystemTime` plus a days-from-civil conversion (`utcdate_to_unix`).
+- **`miscutils/less.c`** — no `ESC[?1049h/l` under `MINGW_TIME32` (fullscreen switch under NANSI).
 - **`build.sh`, `clean.sh`, `vars.sh`, `configs/win9x_defconfig`** — new flat non-kconfig build path and matching defconfig for this target.
 
 Note that the rest of this README contains information concerning the original busybox-w32. **Do not bother the author of the original project with any issues stemming from this fork.**

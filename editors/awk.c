@@ -890,24 +890,30 @@ static char *nextword(char **s)
 	return p;
 }
 
+/* Note: will NOT stop at NUL (either on <NUL> or \<newline><NUL>):
+ * *s will be advanced past NUL!
+ * Make sure you always check NUL return before continuing.
+ */
 static char nextchar(char **s)
 {
-	char c, *pps;
+	char c;
  again:
 	c = *(*s)++;
-	pps = *s;
-	if (c == '\\')
+
+	if (c == '\\') {
+		char *pps = *s;
 		c = bb_process_escape_sequence((const char**)s);
-	/* Example awk statement:
-	 * s = "abc\"def"
-	 * we must treat \" as "
-	 */
-	if (c == '\\' && *s == pps) { /* unrecognized \z? */
-		c = *(*s); /* yes, fetch z */
-		if (c) { /* advance unless z = NUL */
-			(*s)++;
-			if (c == '\n') /* \<newline>? eat it */
-				goto again;
+		/* Example awk statement:
+		 * s = "abc\"def"
+		 * we must treat \" as "
+		 */
+		if (c == '\\' && *s == pps) { /* unrecognized \z? */
+			c = *(*s); /* yes, fetch z */
+			if (c) { /* advance unless z = NUL */
+				(*s)++;
+				if (c == '\n') /* \<newline>? eat it */
+					goto again;
+			}
 		}
 	}
 	return c;
@@ -961,20 +967,71 @@ static double my_strtod_or_hexoct(char **pp)
 
 /* -------- working with variables (set/get/copy/etc) -------- */
 
+/* Perform OFMT or CONVFMT float-to-string conversion.
+ * According to POSIX, awk's behavior is undefined if OFMT
+ * contains anything but a floating-point conversion specification.
+ * However, GNU awk 5.3.0 allows prefix and suffix: "N:%.1f!"
+ * integer formats (%d et al), %s formats.
+ * It even allows %c, but we don't implement this.
+ * GNU awk also supports %ld, %lx, we don't (yet). GNU awk doesn't support %lld.
+ */
 static const char *fmt_num(const char *format, double n)
 {
-	if (n == (long long)n) {
-		snprintf(g_buf, MAXVARFMT, "%"LL_FMT"d", (long long)n);
+	if (n == trunc(n)) {
+		/* No fractionals? Try: awk -v OFMT='R:%d!' 'BEGIN { print 2**128 }' */
+		snprintf(g_buf, MAXVARFMT, "%.0f", n);
 	} else {
 		const char *s = format;
+		const char *p2;
 		char c;
 
-		do { c = *s; } while (c && *++s);
+		/* Find %SPEC in format string */
+		for (;;) {
+			s = strchr(s, '%');
+			if (!s)
+				goto print_verbatim;
+			if (s[1] != '%')
+				break;
+			s += 2;  /* skip "%%" */
+		}
+		/* We are at %SPEC. Is there a second %SPEC? (%% and trailing % aren't %SPEC) */
+		p2 = s;
+		for (;;) {
+			p2 = strchr(p2 + 1, '%');
+			if (!p2) break; /* no more %SPEC: ok */
+			if (*++p2 == '\0') break; /* trailing lone %: ok */
+			if (*p2 != '%') goto INV_FMT; /* more than one %SPEC: error */
+			/* else: %% - ok, look for %SPEC past it by iterating once more */
+		}
+
+//TODO: factor out awk_printf machinery to make %d print large numbers too. Example:
+// awk -v OFMT='R:%d!' 'BEGIN { print 184467440737095.1 }'
+// R:184467440737095!
+		/* Find the format letter */
+		for (;;) {
+			c = *++s;
+			if (!c) /* unterminated "....%SPEC" */
+				goto print_verbatim;
+			if (c == '*')
+				goto INV_FMT; /* CONVFMT/OFMT='%*f' is not allowed */
+			if (isalpha(c))
+				break;
+		}
+
 		if (strchr("diouxX", c)) {
 			snprintf(g_buf, MAXVARFMT, format, (int)n);
 		} else if (strchr("eEfFgGaA", c)) {
+ print_verbatim:
 			snprintf(g_buf, MAXVARFMT, format, n);
+		} else if (c == 's') {
+			/* GNU awk OFMT="%..s" formats number through "%.6g",
+			 * then prints string through %s:
+			 */
+			char nbuf[sizeof(n)*3 + 12]; /* +5 should do? +12 is paranoia */
+			sprintf(nbuf, "%.6g", n);
+			snprintf(g_buf, MAXVARFMT, format, nbuf);
 		} else {
+ INV_FMT:
 			syntax_error(EMSG_INV_FMT);
 		}
 	}
@@ -1205,11 +1262,22 @@ static uint32_t next_token(uint32_t expected)
 			/* it's a string */
 			char *s = t_string = ++p;
 			while (*p != '"') {
-				char *pp;
-				if (*p == '\0' || *p == '\n')
+				char c, *pp;
+
+				/* Since we need to handle \<newline><NUL>
+				 * below, we can handle ordinary NUL there as well,
+				 * instead of here. Thus commented out.
+				 */
+				if (/* *p == '\0' || */ *p == '\n')
 					syntax_error(EMSG_UNEXP_EOS);
 				pp = p;
-				*s++ = nextchar(&pp);
+				c = *s++ = nextchar(&pp);
+				/* awk 'BEGIN { print "unterminated\
+				 * '
+				 * results in NUL here after nextchar() eats \<newline>
+				 */
+				if (c == '\0')
+					syntax_error(EMSG_UNEXP_EOS);
 				p = pp;
 			}
 			p++;
@@ -2490,6 +2558,7 @@ static char *awk_printf(node *n, size_t *len)
 				}
 				goto tail; /* append remaining string, exit loop */
 			}
+//TODO: GNU awk 5.3.0 also supports %ld, %lx, we don't (yet). It does not support %lld.
 			if (isalpha(c))
 				break;
 			starred |= (c == '*');
@@ -2689,9 +2758,8 @@ static char *awk_printf(node *n, size_t *len)
  * store result into (dest), return number of substitutions.
  * If nm = 0, replace all matches.
  * If src or dst is NULL, use $0.
- * If subexp != 0, enable subexpression matching (\0-\9).
  */
-static int awk_sub(node *rn, const char *repl, int nm, var *src, var *dest /*,int subexp*/)
+static int awk_sub(node *rn, const char *repl, int nm, var *src, var *dest /*,int in_gensub*/)
 {
 	char *resbuf;
 	const char *sp;
@@ -2700,7 +2768,7 @@ static int awk_sub(node *rn, const char *repl, int nm, var *src, var *dest /*,in
 	regmatch_t pmatch[10];
 	regex_t sreg, *regex;
 	/* True only if called to implement gensub(): */
-	int subexp = (src != dest);
+	int in_gensub = (src != dest);
 #if defined(REG_STARTEND)
 	const char *src_string;
 	size_t src_strlen;
@@ -2748,32 +2816,74 @@ static int awk_sub(node *rn, const char *repl, int nm, var *src, var *dest /*,in
 		residx += eo;
 		if (++match_no >= nm) {
 			const char *s;
-			int bslash;
 
 			/* replace */
 			residx -= (eo - so);
-			bslash = 0;
-			for (s = repl; *s; s++) {
-				char c = *s;
-				if (c == '\\' && s[1]) {
-					bslash ^= 1;
-					if (bslash)
-						continue;
+			s = repl;
+			while (*s) {
+// https://www.gnu.org/software/gawk/manual/html_node/Gory-Details.html
+// Table 9.2: gawk rules for sub() and backslash:
+// You type	sub() sees	sub() generates
+//     \\q	  \q		A literal ‘\q’      <<-- THIS IS DIFFERENT
+//       &	   &		The matched text
+//     \\&	  \&		A literal ‘&’
+//    \\\\	  \\		Two literal ‘\’s    <<-- THIS IS DIFFERENT
+//   \\\\&	 \\&		A literal ‘\’, then the matched text
+// \\\\\\&	\\\&		A literal ‘\&’
+// \\\\\\q	\\\q		Two literal ‘\’s and literal ‘\q’ <<-- THIS IS DIFFERENT
+// (^^^ non-POSIX special-casing of two backslashes by gawk)
+// Table 9.4: Escape sequence processing for gensub():
+// You type	gensub() sees	gensub() generates
+//     \\q	  \q		A literal ‘q’       <<-- THIS IS DIFFERENT
+//       &	   &		The matched text
+//     \\&	  \&		A literal ‘&’
+//    \\\\	  \\		A literal ‘\’       <<-- THIS IS DIFFERENT
+//   \\\\&	 \\&		A literal ‘\’, then the matched text
+// \\\\\\&	\\\&		A literal ‘\&’
+// \\\\\\q	\\\q		A literal ‘\’ and literal ‘q’     <<-- THIS IS DIFFERENT
+				char c;
+				unsigned bslash = 0;
+				while ((c = *s++) == '\\' && *s) {
+					bslash++;
 				}
-				if ((!bslash && c == '&')
-				 || (subexp && bslash && c >= '0' && c <= '9')
+				if ((!(bslash & 1) && c == '&')
+				 || (in_gensub && (bslash & 1) && c >= '0' && c <= '9')
 				) {
 					int n, j = 0;
 					if (c != '&') {
 						j = c - '0';
 					}
+					bslash /= 2;
+					while (bslash) {
+						resbuf[residx++] = '\\';
+						bslash--;
+					}
 					n = pmatch[j].rm_eo - pmatch[j].rm_so;
 					resbuf = qrealloc(resbuf, residx + replen + n, &resbufsize);
 					memcpy(resbuf + residx, sp + pmatch[j].rm_so - start_ofs, n);
 					residx += n;
-				} else
-					resbuf[residx++] = c;
-				bslash = 0;
+					continue;
+				}
+				// We saw N backslashes, and we are at a "normal char", not special one.
+				// The "normal char" can be a "&" or backslash, examples:
+				// "\\\\\\&..." (in awk program) -> (what we process here) "\\\&...": escaped "&" become "normal".
+				// "\\\\\\"     (in awk program) -> (what we process here) "\\\": last unpaired backslash is "normal".
+//bb_error_msg("in_gensub:%d bslash:%d c:'%c'",in_gensub,bslash,c);
+				if (!in_gensub) {
+					// for non-gensub:
+					// special-case "two backslashes" case, including "\\\q" case which is logically "\\"+"\q"
+				//	if (c != '&' && (bslash == 2 || bslash == 3)) // what doc claims
+					if (c != '&' && (bslash & 2)) // the actual logic in gawk-5.3.0 special-cases NOT ONLY 2,3 - but every two out of four!
+						bslash += 2;
+					if (c != '&') // gensub removes backslash from \q, sub does not:
+						bslash++; // if odd no.of backslashes, print one more, if even: no change
+				}
+				bslash /= 2;
+				while (bslash) {
+					resbuf[residx++] = '\\';
+					bslash--;
+				}
+				resbuf[residx++] = c;
 			}
 		}
 
@@ -3313,8 +3423,7 @@ static var *evaluate(node *op, var *res)
 					for (;;) {
 						var *v = evaluate(nextarg(&op1), TMPVAR0);
 						if (v->type & VF_NUMBER) {
-							fputs(fmt_num(getvar_s(intvar[OFMT]), getvar_i(v)),
-								F);
+							fputs(fmt_num(getvar_s(intvar[OFMT]), getvar_i(v)), F);
 						} else {
 							fputs(getvar_s(v), F);
 						}

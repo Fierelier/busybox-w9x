@@ -359,13 +359,16 @@ for src in \
 	shell/random.c \
 	shell/shell_common.c \
 	util-linux/cal.c \
+	util-linux/fatlabel.c \
 	util-linux/flock.c \
 	util-linux/getopt.c \
 	util-linux/hexdump.c \
 	util-linux/hexdump_xxd.c \
 	util-linux/rev.c \
+	util-linux/swaplabel.c \
 	util-linux/uuidgen.c \
 	win32/actype.c \
+	win32/compat9x.c \
 	win32/dirent.c \
 	win32/dirname.c \
 	win32/env.c \

@@ -2085,7 +2085,7 @@ enum {
 static void record_pending_signo(int sig)
 {
 	sigaddset(&G.pending_set, sig);
-#if ENABLE_FEATURE_EDITING
+#if ENABLE_FEATURE_EDITING || ENABLE_HUSH_READ
 	if (sig != SIGCHLD
 	 || (G_traps && G_traps[SIGCHLD] && G_traps[SIGCHLD][0])
 	 /* ^^^ if SIGCHLD, interrupt line reading only if it has a trap */
@@ -2280,7 +2280,9 @@ static NORETURN void save_history_run_exit_trap_and_exit(int exitcode)
 static int check_and_run_traps(void)
 {
 	int last_sig = 0;
-
+#if ENABLE_HUSH_READ
+	bb_got_signal = 0; /* or else read builtin gets immediately "interrupted" by already handled past signal */
+#endif
 	while (1) {
 		int sig;
 
@@ -2844,7 +2846,7 @@ static int show_prompt_and_get_stdin(struct in_str *i)
 		 * both on keyboard ^C and on real SIGINT (non-kbd generated).
 		 */
 		if (sigismember(&G.pending_set, SIGINT)) {
-			write(STDOUT_FILENO, "^C\n", 3);
+			write(STDERR_FILENO, "^C\n", 3);
 			G.last_exitcode = 128 | SIGINT;
 		}
 		check_and_run_traps();
@@ -2855,7 +2857,7 @@ static int show_prompt_and_get_stdin(struct in_str *i)
 		if (!bb_got_signal) {
 			/* r < 0: ^D/EOF/error detected (but not signal) */
 			/* ^D on interactive input goes to next line before exiting: */
-			write(STDOUT_FILENO, "\n", 1);
+			write(STDERR_FILENO, "\n", 1);
 			i->p = NULL;
 			i->peek_buf[0] = r = EOF;
 			return r;
@@ -2895,7 +2897,7 @@ static int show_prompt_and_get_stdin(struct in_str *i)
 			/* ^C or SIGINT: repeat */
 			/* bash prints ^C even on real SIGINT (non-kbd generated) */
 			/* kernel prints "^C" itself, just print newline: */
-			write(STDOUT_FILENO, "\n", 1);
+			write(STDERR_FILENO, "\n", 1);
 			G.last_exitcode = 128 | SIGINT;
 		}
 	}
@@ -3295,7 +3297,7 @@ static void o_addqchr(o_string *o, int ch)
 	/* '-' is included because of this case:
 	 * >filename0 >filename1 >filename9; v='-'; echo filename[0"$v"9]
 	 */
-	char *found = strchr("*?[-\\" MAYBE_BRACES, ch);
+	const char *found = strchr("*?[-\\" MAYBE_BRACES, ch);
 	if (found)
 		sz++;
 	o_grow_by(o, sz);
@@ -7183,9 +7185,9 @@ static NOINLINE int expand_one_var(o_string *output, int n, char *arg, char **pp
 	char *p;
 	char *var;
 	char exp_op;
-	char exp_save = exp_save; /* for compiler */
+	char UNINITIALIZED_VAR(exp_savech, exp_savech); /* for compiler */
 	char *exp_saveptr; /* points to expansion operator */
-	char *exp_word = exp_word; /* for compiler */
+	char *UNINITIALIZED_VAR(exp_word, NULL);  /* for compiler */
 	char arg0;
 
 	val = NULL;
@@ -7193,13 +7195,13 @@ static NOINLINE int expand_one_var(o_string *output, int n, char *arg, char **pp
 	p = *pp;
 	*p = '\0'; /* replace trailing SPECIAL_VAR_SYMBOL */
 	var = arg;
-	exp_saveptr = arg[1] ? strchr(VAR_ENCODED_SUBST_OPS, arg[1]) : NULL;
+	exp_saveptr = arg[1] ? (char*)strchr(VAR_ENCODED_SUBST_OPS, arg[1]) : NULL;
 	arg0 = arg[0];
 	arg[0] = (arg0 & 0x7f);
 	exp_op = 0;
 
 	if (arg[0] == '#' && arg[1] /* ${#...} but not ${#} */
-	 && (!exp_saveptr               /* and ( not(${#<op_char>...}) */
+	 && (!exp_saveptr               /* and ( not ${#<op_char>...} */
 	    || (arg[2] == '\0' && strchr(SPECIAL_VARS_STR, arg[1])) /* or ${#C} "len of $C" ) */
 	    )		/* NB: skipping ^^^specvar check mishandles ${#::2} */
 	) {
@@ -7217,7 +7219,7 @@ static NOINLINE int expand_one_var(o_string *output, int n, char *arg, char **pp
 			/* ${?}, ${var}, ${var:0}, ${var[:]%0} etc */
 			exp_saveptr = var+1 + strcspn(var+1, VAR_ENCODED_SUBST_OPS);
 		}
-		exp_op = exp_save = *exp_saveptr;
+		exp_op = exp_savech = *exp_saveptr;
 		if (exp_op) {
 			exp_word = exp_saveptr + 1;
 			if (exp_op == ':') {
@@ -7514,11 +7516,11 @@ static NOINLINE int expand_one_var(o_string *output, int n, char *arg, char **pp
 			 * $ x=; f "${x:-'x y' z}"
 			 * |'x y' z|
 			 */
-			int use_word = (!val || ((exp_save == ':') && !val[0]));
+			int use_word = (!val || ((exp_savech == ':') && !val[0]));
 			if (exp_op == '+')
 				use_word = !use_word;
 			debug_printf_expand("expand: op:%c (null:%s) test:%i\n", exp_op,
-					(exp_save == ':') ? "true" : "false", use_word);
+					(exp_savech == ':') ? "true" : "false", use_word);
 			if (use_word) {
 				if (exp_op == '+' || exp_op == '-') {
 					/* ${var+word} - use alternative value */
@@ -7545,7 +7547,7 @@ static NOINLINE int expand_one_var(o_string *output, int n, char *arg, char **pp
 							? exp_word
 							: "parameter null or not set"
 							/* ash has more specific messages, a-la: */
-							/*: (exp_save == ':' ? "parameter null or not set" : "parameter not set")*/
+							/*: (exp_savech == ':' ? "parameter null or not set" : "parameter not set")*/
 						);
 //TODO: how interactive bash aborts expansion mid-command?
 //It aborts the entire line, returns to prompt:
@@ -7571,7 +7573,7 @@ static NOINLINE int expand_one_var(o_string *output, int n, char *arg, char **pp
 			}
 		} /* one of "-=+?" */
 
-		*exp_saveptr = exp_save;
+		*exp_saveptr = exp_savech;
 	} /* if (exp_op) */
 
 	arg[0] = arg0;
@@ -11753,8 +11755,12 @@ static int FAST_FUNC builtin_read(char **argv)
 
 	if ((uintptr_t)r == 1 && errno == EINTR) {
 		unsigned sig = check_and_run_traps();
-		if (sig != SIGINT)
+		if (sig != SIGINT
+		 || (G_traps && G_traps[SIGINT] && G_traps[SIGINT][0])
+		) {
+			/* Redo the read after signals other than untrapped SIGINT */
 			goto again;
+		}
 	}
 
 	if ((uintptr_t)r == 2) /* -t SEC timeout? */

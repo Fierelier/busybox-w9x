@@ -312,7 +312,7 @@ PUSH_AND_SET_FUNCTION_VISIBILITY_TO_HIDDEN
 	)
 
 // UCRT supports both "ll" and "I64", but gcc warns on "I64" with UCRT mingw
-#if ENABLE_PLATFORM_MINGW32 && !ENABLE_MINGW_TIME32 && !defined(_UCRT) && \
+#if ENABLE_PLATFORM_MINGW32 && !defined(_UCRT) && \
 	(!defined(__USE_MINGW_ANSI_STDIO) || !__USE_MINGW_ANSI_STDIO)
 #define LL_FMT "I64"
 #else
@@ -509,10 +509,12 @@ void *xmmap_anon(size_t size) FAST_FUNC;
 # define BB_ARCH_FIXED_PAGESIZE 4096
 #elif defined(__arm__) /* only 32bit, 64bit ARM has variable page size */
 # define BB_ARCH_FIXED_PAGESIZE 4096
+#elif defined(__riscv) /* both rv32 and rv64 have fixed page size of 4KiB */
+# define BB_ARCH_FIXED_PAGESIZE 4096
 #else /* if defined(ARCH) */
 /* add you favorite arch today! */
 //From Linux kernel inspection:
-//xtenza,s390[x],riscv,nios2,csky,sparc32: fixed 4k pages
+//xtenza,s390[x],nios2,csky,sparc32: fixed 4k pages
 //sparc64,alpha,openrisc: fixed 8k pages
 #endif
 
@@ -554,16 +556,17 @@ enum {	/* cp.c, mv.c, install.c depend on these values. CAREFUL when changing th
 #endif
 #define FILEUTILS_CP_OPTSTR "pdRfinlsLHarPvuTt:" IF_SELINUX("c")
 /* How many bits in FILEUTILS_CP_OPTSTR? */
-	FILEUTILS_CP_OPTBITS      = 18 - !ENABLE_SELINUX,
+	FILEUTILS_CP_OPTBITS      = (18 - !ENABLE_SELINUX),
 
-	FILEUTILS_RMDEST          = 1 << (19 - !ENABLE_SELINUX), /* cp --remove-destination */
-	/* bit 18 skipped for "cp --parents" */
+	FILEUTILS_RMDEST          = 1 << (18 - !ENABLE_SELINUX), /* cp --remove-destination */
+	/* bit 19 is used in cp for "cp --parents" */
 	FILEUTILS_REFLINK         = 1 << (20 - !ENABLE_SELINUX), /* cp --reflink=auto */
-	FILEUTILS_REFLINK_ALWAYS  = 1 << (21 - !ENABLE_SELINUX), /* cp --reflink[=always] */
+	/* bit 21 is used in cp for "cp --sparse=... */
 	/*
 	 * Hole. cp may have some bits set here,
 	 * they should not affect remove_file()/copy_file()
 	 */
+	FILEUTILS_REFLINK_ALWAYS  = 1 << 29, /* cp --reflink, --reflink=always */
 #if ENABLE_SELINUX
 	FILEUTILS_SET_SECURITY_CONTEXT = 1 << 30,
 #endif
@@ -2011,10 +2014,10 @@ void getcaps(void *caps) FAST_FUNC;
 
 #if ENABLE_SELINUX
 extern void renew_current_security_context(void) FAST_FUNC;
-extern void set_current_security_context(security_context_t sid) FAST_FUNC;
-extern context_t set_security_context_component(security_context_t cur_context,
+extern void set_current_security_context(char *sid) FAST_FUNC;
+extern context_t set_security_context_component(char *cur_context,
 						char *user, char *role, char *type, char *range) FAST_FUNC;
-extern void setfscreatecon_or_die(security_context_t scontext) FAST_FUNC;
+extern void setfscreatecon_or_die(char *scontext) FAST_FUNC;
 extern void selinux_preserve_fcontext(int fdesc) FAST_FUNC;
 #else
 #define selinux_preserve_fcontext(fdesc) ((void)0)
@@ -2756,6 +2759,10 @@ extern const char bbvar[] ALIGN1;
 #define BB_CRITICAL_ERROR_DIALOGS bbafter(BB_SYSTEMROOT)
 #endif
 
+/* Stored without terminating NUL */
+extern const char bb_SWAPSPACE2[sizeof("SWAPSPACE2")-1];
+
+
 extern const int const_int_0;
 //extern const int const_int_1;
 
@@ -2876,6 +2883,8 @@ do { \
 		BUG_wrong_field_size(); \
 } while (0)
 
+#define FETCH_LE16(field) \
+	(sizeof(field) == 2 ? SWAP_LE16(field) : BUG_wrong_field_size())
 #define FETCH_LE32(field) \
 	(sizeof(field) == 4 ? SWAP_LE32(field) : BUG_wrong_field_size())
 

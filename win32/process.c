@@ -722,18 +722,25 @@ void get_process_times(DWORD pid, unsigned long* start_time,
 		unsigned long *stime,
 		unsigned long *utime)
 {
+	DWORD flag;
 	HANDLE proc;
-	FILETIME crTime, exTime, keTime, usTime;
+	FILETIME crTime = {0, 0}, exTime, keTime, usTime;
 
 	*start_time = *stime = *utime = 0;
-	if ((proc=OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION,
-				FALSE, pid))) {
+	flag = PROCESS_QUERY_LIMITED_INFORMATION;
+ retry:
+	if ((proc=OpenProcess(flag, FALSE, pid))) {
 		if (GetProcessTimes(proc, &crTime, &exTime, &keTime, &usTime)) {
 			long long ticks_since_boot, boot_time, create_time;
 			FILETIME now;
 
-			ticks_since_boot = GetTickCount64()/MS_PER_TICK;
-			GetSystemTimeAsFileTime(&now);
+			// On Windows XP GetProcessTimes() appears to succeed
+			// but returns nonsensical data for PID 4, System.
+			if (crTime.dwHighDateTime == 0 && crTime.dwLowDateTime == 0)
+				return;
+
+			ticks_since_boot = monotonic_ms()/MS_PER_TICK;
+			GetSystemTimePreciseAsFileTime(&now);
 			boot_time = filetime_to_ticks(&now) - ticks_since_boot;
 			create_time = filetime_to_ticks(&crTime);
 
@@ -742,6 +749,11 @@ void get_process_times(DWORD pid, unsigned long* start_time,
 			*utime = (unsigned long)filetime_to_ticks(&usTime);
 		}
 		CloseHandle(proc);
+	} else if (flag == PROCESS_QUERY_LIMITED_INFORMATION) {
+		// Windows XP doesn't support PROCESS_QUERY_LIMITED_INFORMATION,
+		// retry with PROCESS_QUERY_INFORMATION instead.
+		flag = PROCESS_QUERY_INFORMATION;
+		goto retry;
 	}
 }
 

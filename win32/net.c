@@ -1,5 +1,6 @@
 #include "libbb.h"
 #include "lazyload.h"
+#include "mingw_ip.h"
 
 int FAST_FUNC inet_aton(const char *cp, struct in_addr *inp)
 {
@@ -24,6 +25,41 @@ void init_winsock(void)
 
 	atexit((void(*)(void)) WSACleanup);
 	initialized = 1;
+}
+
+#undef inet_ntop
+const char *mingw_inet_ntop (int af, const void *__restrict addr, char *__restrict buf, socklen_t buflen) {
+	/* There is an inet_ntop function, but only in Windows Vista */
+	union {
+		struct sockaddr sa;
+		struct sockaddr_in sin;
+#if ENABLE_FEATURE_IPV6
+		struct sockaddr_in6 sin6;
+#endif
+	} u;
+	DWORD buflen_dw = buflen;
+	memset(&u, 0, sizeof(u));
+	u.sa.sa_family = af;
+
+	switch (af) {
+	case AF_INET:
+		memcpy(&u.sin.sin_addr, addr, sizeof(u.sin.sin_addr));
+		break;
+#if ENABLE_FEATURE_IPV6
+	case AF_INET6:
+		memcpy(&u.sin6.sin6_addr, addr, sizeof(u.sin6.sin6_addr));
+		break;
+#endif
+	default:
+		bb_error_msg_and_die("inet_ntop: unsupported family: %d", af);
+	}
+
+	init_winsock();
+	if (WSAAddressToStringA(&u.sa, sizeof(u), NULL, buf, &buflen_dw) != 0) {
+		errno = WSAGetLastError();
+		return NULL;
+	}
+	return buf;
 }
 
 #undef gethostname
@@ -88,6 +124,33 @@ static int getaddrinfo_via_gethostbyname(const char *node, const char *service,
 	return 0;
 }
 
+static int getnameinfo_via_gethostbyaddr(const struct sockaddr *sa,
+			char *host, int hostsz, char *svc, int svcsz, int flags)
+{
+	const struct sockaddr_in *sin;
+	struct hostent *he;
+
+	/* same ceiling as getaddrinfo above - IPv4 only, no service-name
+	 * lookup (callers already pass NI_NUMERICSERV). */
+	if (sa->sa_family != AF_INET)
+		return EAI_FAMILY;
+	sin = (const struct sockaddr_in *)sa;
+
+	if (host && hostsz) {
+		he = (flags & NI_NUMERICHOST) ? NULL : gethostbyaddr(
+				(const char *)&sin->sin_addr, sizeof(sin->sin_addr), AF_INET);
+		if (he && he->h_name)
+			safe_strncpy(host, he->h_name, hostsz);
+		else if (flags & NI_NAMEREQD)
+			return EAI_NONAME;
+		else
+			safe_strncpy(host, inet_ntoa(sin->sin_addr), hostsz);
+	}
+	if (svc && svcsz)
+		snprintf(svc, svcsz, "%u", ntohs(sin->sin_port));
+	return 0;
+}
+
 int FAST_FUNC mingw_getaddrinfo(const char *node, const char *service,
 				const struct addrinfo *hints, struct addrinfo **res)
 {
@@ -118,46 +181,31 @@ void FAST_FUNC mingw_freeaddrinfo(struct addrinfo *res)
 }
 
 #undef getnameinfo
-int FAST_FUNC mingw_getnameinfo(const struct sockaddr *sa, socklen_t salen,
-			char *host, socklen_t hostlen,
-			char *serv, socklen_t servlen, int flags)
+int FAST_FUNC mingw_getnameinfo(const struct sockaddr *sa, socklen_t salen, char *host, int hostsz, char *svc, int svcsz, int flags)
 {
 	DECLARE_PROC_ADDR(int, getnameinfo, const struct sockaddr *, socklen_t,
-			char *, socklen_t, char *, socklen_t, int);
-	const struct sockaddr_in *sin;
-	struct hostent *he;
+			char *, DWORD, char *, DWORD, int);
 
+	init_winsock();
 	if (INIT_PROC_ADDR(ws2_32.dll, getnameinfo))
-		return getnameinfo(sa, salen, host, hostlen, serv, servlen, flags);
-
-	/* same ceiling as getaddrinfo above - IPv4 only, no service-name
-	 * lookup (callers already pass NI_NUMERICSERV). */
-	if (sa->sa_family != AF_INET)
-		return EAI_FAMILY;
-	sin = (const struct sockaddr_in *)sa;
-
-	if (host && hostlen) {
-		he = (flags & NI_NUMERICHOST) ? NULL : gethostbyaddr(
-				(const char *)&sin->sin_addr, sizeof(sin->sin_addr), AF_INET);
-		if (he && he->h_name)
-			safe_strncpy(host, he->h_name, hostlen);
-		else if (flags & NI_NAMEREQD)
-			return EAI_NONAME;
-		else
-			safe_strncpy(host, inet_ntoa(sin->sin_addr), hostlen);
-	}
-	if (serv && servlen)
-		snprintf(serv, servlen, "%u", ntohs(sin->sin_port));
-	return 0;
+		return getnameinfo(sa, salen, host, hostsz, svc, svcsz, flags);
+	return getnameinfo_via_gethostbyaddr(sa, host, hostsz, svc, svcsz, flags);
 }
 
 int FAST_FUNC mingw_socket(int domain, int type, int protocol)
 {
+	static char include_overlapped = 0;
 	int sockfd;
 	SOCKET s;
 
+	if (domain == MINGW_INCLUDE_OVERLAPPED_ONCE) {
+		include_overlapped = 1;
+		return 0;
+	}
+
 	init_winsock();
-	s = WSASocket(domain, type, protocol, NULL, 0, 0);
+	s = WSASocket(domain, type, protocol, NULL, 0, include_overlapped ? WSA_FLAG_OVERLAPPED : 0);
+	include_overlapped = 0;
 	if (s == INVALID_SOCKET) {
 		/*
 		 * WSAGetLastError() values are regular BSD error codes
@@ -193,6 +241,64 @@ int FAST_FUNC mingw_bind(int sockfd, struct sockaddr *sa, size_t sz)
 {
 	SOCKET s = (SOCKET)_get_osfhandle(sockfd);
 	return bind(s, sa, sz);
+}
+
+#undef sendto
+int FAST_FUNC mingw_sendto(int sockfd, const char *buf, int len, int flags, const struct sockaddr *to, int tolen)
+{
+	SOCKET s = (SOCKET)_get_osfhandle(sockfd);
+	int res = sendto(s, buf, len, flags, to, tolen);
+	if (res < 0)
+		errno = WSAGetLastError();
+	return res;
+}
+
+#undef recv
+int FAST_FUNC mingw_recv(int sockfd, char *buf, int len, int flags)
+{
+	SOCKET s = (SOCKET)_get_osfhandle(sockfd);
+	int res = recv(s, buf, len, flags);
+	if (res < 0)
+		errno = WSAGetLastError();
+	return res;
+}
+
+#undef recvfrom
+int FAST_FUNC mingw_recvfrom(int sockfd, char *buf, int len, int flags, struct sockaddr *from, int *fromlen)
+{
+	SOCKET s = (SOCKET)_get_osfhandle(sockfd);
+	int res = recvfrom(s, buf, len, flags, from, fromlen);
+	if (res < 0)
+		errno = WSAGetLastError();
+	return res;
+}
+
+int recvmsg(int fd, LPWSAMSG msg, int flags) {
+	DWORD recv_length;
+	LPFN_WSARECVMSG lpWSARecvMsg = NULL;
+	GUID g = WSAID_WSARECVMSG;
+	SOCKET s = (SOCKET)_get_osfhandle(fd);
+
+	/* Look up the WSARecvMsg function for the socket */
+	if (WSAIoctl(s, SIO_GET_EXTENSION_FUNCTION_POINTER,
+			&g, sizeof(g),
+			&lpWSARecvMsg, sizeof(lpWSARecvMsg),
+			&recv_length, NULL, NULL) != 0) {
+		/* WSARecvMsg is not available. Don't do any control messages */
+		msg->msg_controllen = 0;
+		return mingw_recvfrom(fd,
+			msg->msg_iov->iov_base, msg->msg_iov->iov_len,
+			flags,
+			msg->msg_name, &msg->msg_namelen);
+	}
+
+	msg->msg_flags = flags;
+
+	if (lpWSARecvMsg(s, msg, &recv_length, NULL, NULL) != 0) {
+		errno = WSAGetLastError();
+		return -1;
+	}
+	return recv_length;
 }
 
 #undef setsockopt

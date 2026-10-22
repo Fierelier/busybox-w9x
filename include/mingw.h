@@ -3,8 +3,10 @@
 #define IMPL(name,ret,retval,...) static inline ret name(__VA_ARGS__) { return retval; }
 
 /* Use 64-bit time on 32-bit platforms. */
-#if !defined(_WIN64) && __MINGW64_VERSION_MAJOR >= 10
+#if !defined(_WIN64) && (__MINGW64_VERSION_MAJOR >= 10 || ENABLE_MINGW_TIME32)
 # define time_t __time64_t
+#endif
+#if !defined(_WIN64) && __MINGW64_VERSION_MAJOR >= 10
 # define ctime(t) _ctime64(t)
 // localtime is handled in mingw_localtime()
 # define time(t) _time64(t)
@@ -29,6 +31,8 @@ static inline unsigned int git_ntohl(unsigned int x) { return (unsigned int)ntoh
 #define ntohl git_ntohl
 int inet_aton(const char *cp, struct in_addr *inp) FAST_FUNC;
 int inet_pton(int af, const char *src, void *dst) FAST_FUNC;
+const char *mingw_inet_ntop (int, const void *__restrict, char *__restrict, socklen_t);
+#define inet_ntop mingw_inet_ntop
 
 /*
  * fcntl.h
@@ -276,7 +280,7 @@ int unsetenv(const char *env) FAST_FUNC;
 /*
  * string.h
  */
-char *strndup(char const *s, size_t n) FAST_FUNC;
+char *strndup(char const *s, size_t n);
 char *mingw_strerror(int errnum) FAST_FUNC;
 char *strsignal(int sig) FAST_FUNC;
 int strverscmp(const char *s1, const char *s2) FAST_FUNC;
@@ -333,10 +337,13 @@ int mingw_gethostname(char *host, int namelen) FAST_FUNC;
 int mingw_getaddrinfo(const char *node, const char *service,
 			const struct addrinfo *hints, struct addrinfo **res) FAST_FUNC;
 void mingw_freeaddrinfo(struct addrinfo *res) FAST_FUNC;
-int mingw_getnameinfo(const struct sockaddr *sa, socklen_t salen,
-			char *host, socklen_t hostlen,
-			char *serv, socklen_t servlen, int flags) FAST_FUNC;
+int mingw_getnameinfo(const struct sockaddr *sa, socklen_t salen, char *host, int hostlen, char *svc, int svclen, int flags) FAST_FUNC;
 struct hostent *mingw_gethostbyaddr(const void *addr, socklen_t len, int type) FAST_FUNC;
+int mingw_sendto(int sockfd, const char *buf, int len, int flags, const struct sockaddr *to, int tolen) FAST_FUNC;
+int mingw_recv(int sockfd, char *buf, int len, int flags) FAST_FUNC;
+int mingw_recvfrom(int sockfd, char *buf, int len, int flags, struct sockaddr *from, int *fromlen) FAST_FUNC;
+
+int recvmsg(int fd, LPWSAMSG msg, int flags);
 
 #define socket mingw_socket
 #define connect mingw_connect
@@ -350,8 +357,16 @@ struct hostent *mingw_gethostbyaddr(const void *addr, socklen_t len, int type) F
 #define gethostname mingw_gethostname
 #define getaddrinfo mingw_getaddrinfo
 #define freeaddrinfo mingw_freeaddrinfo
-#define getnameinfo mingw_getnameinfo
 #define gethostbyaddr mingw_gethostbyaddr
+#define sendto mingw_sendto
+#define recv mingw_recv
+#define recvfrom mingw_recvfrom
+#define getnameinfo mingw_getnameinfo
+
+/* this is a constant that doesn't collide with AF_* */
+/* Used to add WSA_FLAG_OVERLAPPED to the next call to WSASocket */
+/* Use: mingw_socket(MINGW_INCLUDE_OVERLAPPED_ONCE, 0, 0); */
+#define MINGW_INCLUDE_OVERLAPPED_ONCE 0x512
 
 /*
  * sys/time.h
@@ -708,8 +723,28 @@ size_t remove_cr(char *p, size_t len) FAST_FUNC;
 
 int err_win_to_posix(void);
 
-ULONGLONG CompatGetTickCount64(void);
-#define GetTickCount64 CompatGetTickCount64
+void CompatGetSystemTimePreciseAsFileTime(FILETIME *ft);
+#define GetSystemTimePreciseAsFileTime CompatGetSystemTimePreciseAsFileTime
+
+void compat_get_system_time_as_file_time(LPFILETIME ft);
+BOOL compat_get_file_attributes_ex_a(LPCSTR name, GET_FILEEX_INFO_LEVELS level,
+		LPVOID info);
+BOOL compat_get_process_times(HANDLE process, LPFILETIME creation,
+		LPFILETIME exit_time, LPFILETIME kernel, LPFILETIME user);
+BOOL compat_get_disk_free_space_ex_a(LPCSTR dir, PULARGE_INTEGER avail,
+		PULARGE_INTEGER total, PULARGE_INTEGER total_free);
+BOOL compat_lock_file_ex(HANDLE h, DWORD flags, DWORD reserved, DWORD len_low,
+		DWORD len_high, LPOVERLAPPED ovlp);
+HANDLE compat_create_remote_thread(HANDLE process, LPSECURITY_ATTRIBUTES sa,
+		SIZE_T stack, LPTHREAD_START_ROUTINE start, LPVOID arg, DWORD flags,
+		LPDWORD id);
+#define LockFileEx compat_lock_file_ex
+#define CreateRemoteThread compat_create_remote_thread
+#undef GetDiskFreeSpaceEx
+#define GetSystemTimeAsFileTime compat_get_system_time_as_file_time
+#define GetFileAttributesExA compat_get_file_attributes_ex_a
+#define GetProcessTimes compat_get_process_times
+#define GetDiskFreeSpaceEx compat_get_disk_free_space_ex_a
 
 int enumerate_links(const char *file, char *name) FAST_FUNC;
 

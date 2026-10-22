@@ -158,7 +158,7 @@ int id_main(int argc UNUSED_PARAM, char **argv)
 	const char *prefix;
 	const char *username;
 #if ENABLE_SELINUX
-	security_context_t scontext = NULL;
+	char *scontext = NULL;
 #endif
 
 	if (ENABLE_GROUPS && (!ENABLE_ID || applet_name[0] == 'g')) {
@@ -248,6 +248,7 @@ int id_main(int argc UNUSED_PARAM, char **argv)
 				prefix = ",";
 			}
 		} else if (n < 0) { /* error in get_groups() */
+			bb_putchar('\n');
 			if (ENABLE_DESKTOP)
 				bb_simple_error_msg_and_die("can't get groups");
 			return EXIT_FAILURE;

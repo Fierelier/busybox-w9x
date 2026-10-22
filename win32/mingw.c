@@ -224,6 +224,16 @@ static int get_dev_fd(const char *filename)
 	return -1;
 }
 
+static int get_dev_fd_or_std(const char *filename)
+{
+	int fd = get_dev_type(filename);
+
+	if (fd == DEV_STDIN || fd == DEV_STDOUT || fd == DEV_STDERR)
+		return fd;
+
+	return get_dev_fd(filename);
+}
+
 static int mingw_is_directory(const char *path);
 #undef open
 int mingw_open (const char *filename, int oflags, ...)
@@ -386,14 +396,17 @@ static inline struct timespec filetime_to_timespec(const FILETIME *ft)
 	return ts;
 }
 
-static inline mode_t file_attr_to_st_mode(DWORD attr)
+static inline mode_t file_attr_to_st_mode(int fd, DWORD attr)
 {
 	mode_t fMode = S_IRUSR|S_IRGRP|S_IROTH;
 	if (attr & FILE_ATTRIBUTE_DIRECTORY)
 		fMode |= (S_IFDIR|S_IRWXU|S_IRWXG|S_IRWXO) & ~(current_umask & 0022);
-	else if (attr & FILE_ATTRIBUTE_DEVICE)
-		fMode |= S_IFCHR|S_IWUSR|S_IWGRP|S_IWOTH;
-	else
+	else if (attr & FILE_ATTRIBUTE_DEVICE) {
+		if (GetFileType((HANDLE)_get_osfhandle(fd)) == FILE_TYPE_PIPE)
+			fMode |= S_IFIFO|S_IWUSR|S_IWGRP|S_IWOTH;
+		else
+			fMode |= S_IFCHR|S_IWUSR|S_IWGRP|S_IWOTH;
+	} else
 		fMode |= S_IFREG;
 	if (!(attr & (FILE_ATTRIBUTE_READONLY|FILE_ATTRIBUTE_DEVICE)))
 		fMode |= (S_IWUSR|S_IWGRP|S_IWOTH) & ~(current_umask & 0022);
@@ -822,8 +835,10 @@ static int do_lstat(int follow, const char *file_name, struct mingw_stat *buf)
 			buf->st_ctim = filetime_to_timespec(&(findbuf.ftCreationTime));
 		}
 		else {
+			int fd = get_dev_fd_or_std(file_name);
+
 			/* The file is not a symlink. */
-			buf->st_mode = file_attr_to_st_mode(fdata.dwFileAttributes);
+			buf->st_mode = file_attr_to_st_mode(fd, fdata.dwFileAttributes);
 			if (S_ISREG(buf->st_mode) &&
 					(has_exe_suffix(file_name) ||
 					(!(buf->st_attr & FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS) &&
@@ -958,7 +973,7 @@ int FAST_FUNC mingw_fstat(int fd, struct mingw_stat *buf)
 	}
 
 	if (GetFileInformationByHandle(fh, &fdata)) {
-		buf->st_mode = file_attr_to_st_mode(fdata.dwFileAttributes);
+		buf->st_mode = file_attr_to_st_mode(-1, fdata.dwFileAttributes);
 		buf->st_attr = fdata.dwFileAttributes;
 		buf->st_size = fdata.nFileSizeLow |
 			(((off64_t)fdata.nFileSizeHigh)<<32);
@@ -1005,7 +1020,7 @@ static int hutimens(HANDLE fh, const struct timespec times[2])
 	FILETIME *pft[2] = {&aft, &mft};
 	int i;
 
-	GetSystemTimeAsFileTime(&now);
+	GetSystemTimePreciseAsFileTime(&now);
 
 	if (times) {
 		for (i = 0; i < 2; ++i) {
@@ -1140,7 +1155,7 @@ int gettimeofday(struct timeval *tv, void *tz UNUSED_PARAM)
 	FILETIME ft;
 	long long hnsec;
 
-	GetSystemTimeAsFileTime(&ft);
+	GetSystemTimePreciseAsFileTime(&ft);
 	hnsec = filetime_to_hnsec(&ft);
 	tv->tv_sec = hnsec / 10000000;
 	tv->tv_usec = (hnsec % 10000000) / 10;
@@ -1155,7 +1170,7 @@ int FAST_FUNC clock_gettime(clockid_t clockid, struct timespec *tp)
 		errno = ENOSYS;
 		return -1;
 	}
-	GetSystemTimeAsFileTime(&ft);
+	GetSystemTimePreciseAsFileTime(&ft);
 	*tp = filetime_to_timespec(&ft);
 	return 0;
 }
@@ -1547,15 +1562,40 @@ long long FAST_FUNC mingw_strtoll(const char *nptr, char **endptr, int base)
  * time/ctime/gmtime/mktime - disassembly confirms those are 32-bit-only
  * at the ABI level. Ceiling: mktime() below needs valid tm fields,
  * SystemTimeToFileTime rejects e.g. day 32 (no glibc-style normalizing). */
+// Uses Howard Hinnant's days-from-civil algorithm: https://howardhinnant.github.io/date_algorithms.html#days_from_civil
+static int64_t utcdate_to_unix(int year, int month, int day, int hour, int minute, int second) {
+	int64_t y = year;
+	int64_t m = month;
+	int64_t era, yoe, mp, doy, doe, days;
+	
+	y -= (m <= 2);
+	era = (y >= 0 ? y : y - 399) / 400;
+	yoe = y - era * 400;
+	mp = m + (m > 2 ? -3 : 9);
+	doy = (153 * mp + 2) / 5 + day - 1;
+	doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+	
+	days = era * 146097 + doe - 719468;
+	
+	return days * 86400
+		+ (int64_t)hour * 3600
+		+ (int64_t)minute * 60
+		+ second;
+}
+	
+static int64_t time64(void) {
+	SYSTEMTIME t;
+	GetSystemTime(&t);
+	return utcdate_to_unix(
+		t.wYear,t.wMonth,t.wDay,
+		t.wHour,t.wMinute,t.wSecond
+	);
+}
+
 time_t FAST_FUNC mingw_time(time_t *t)
 {
-	FILETIME ft;
-	struct timespec ts;
-	time_t now;
+	time_t now = (time_t)time64();
 
-	GetSystemTimeAsFileTime(&ft);
-	ts = filetime_to_timespec(&ft);
-	now = ts.tv_sec;
 	if (t)
 		*t = now;
 	return now;
@@ -2447,7 +2487,7 @@ int FAST_FUNC sysinfo(struct sysinfo *info)
 	info->totalswap = pfinfo.total * perf.PageSize / 4096;
 	info->freeswap = (pfinfo.total - pfinfo.in_use) * perf.PageSize / 4096;
 
-	info->uptime = GetTickCount64() / 1000;
+	info->uptime = monotonic_sec();
 	info->procs = perf.ProcessCount;
 
 	return 0;
@@ -2792,16 +2832,16 @@ off_t FAST_FUNC mingw_lseek(int fd, off_t offset, int whence)
 	return _lseeki64(fd, offset, whence);
 }
 
-#undef GetTickCount64
-ULONGLONG CompatGetTickCount64(void)
+/* precise time is only supported since win8 */
+#undef GetSystemTimePreciseAsFileTime
+void CompatGetSystemTimePreciseAsFileTime(FILETIME *ft)
 {
-	DECLARE_PROC_ADDR(ULONGLONG, GetTickCount64, void);
+	DECLARE_PROC_ADDR(VOID, GetSystemTimePreciseAsFileTime, FILETIME *);
 
-	if (!INIT_PROC_ADDR(kernel32.dll, GetTickCount64)) {
-		return (ULONGLONG)GetTickCount();
-	}
-
-	return GetTickCount64();
+	if (INIT_PROC_ADDR(kernel32.dll, GetSystemTimePreciseAsFileTime))
+		GetSystemTimePreciseAsFileTime(ft);
+	else
+		GetSystemTimeAsFileTime(ft);
 }
 
 #if ENABLE_FEATURE_INSTALLER
