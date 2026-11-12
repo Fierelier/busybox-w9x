@@ -7,6 +7,23 @@ This is an experimental fork of [busybox-w32](https://github.com/rmyorston/busyb
 
 **I recommend you install [NANSI](https://www.kegel.com/nansi/)**, to gain some of the required ANSI codes.
 
+`build.sh` honours these environment variables:
+
+| Variable | Default |
+| --- | --- |
+| `CROSS_COMPILE` | `i686-w64-mingw32-` |
+| `CC` | `${CROSS_COMPILE}gcc` |
+| `WINDRES`, `STRIP`, `NM` | `${CROSS_COMPILE}<tool>`, else the unprefixed tool. `STRIP=:` skips stripping |
+| `HOSTCC`, `HOSTCFLAGS`, `HOSTLDFLAGS` | `gcc`, `-Wall -Wstrict-prototypes -O2 -fomit-frame-pointer`, empty |
+| `CFLAGS` | i486 tuning, warnings and `-Oz` (replaces the default when set) |
+| `CPPFLAGS`, `EXTRA_CFLAGS` | appended to `CFLAGS` |
+| `LDFLAGS`, `EXTRA_LDFLAGS` | `-static-libgcc`, appended to `LDFLAGS` |
+| `LDLIBS`, `EXTRA_LDLIBS` | `ws2_32 bcrypt secur32` (unneeded ones get dropped), always linked |
+| `WINDRESFLAGS` | empty |
+| `J` | `nproc` (parallel jobs) |
+
+Example: `CROSS_COMPILE=i486-w64-mingw32- CFLAGS="-O2 -march=i486" STRIP=: ./build.sh`
+
 ### Known issues
 
 - `ls -lh` shows weird file size units

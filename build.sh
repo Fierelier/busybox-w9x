@@ -21,33 +21,51 @@ test -f include/autoconf.h || {
 # comments in each dir's .c files. Pure sed/shell, no compilation involved.
 ./scripts/gen_build_files.sh "$TOP" "$TOP" >/dev/null
 
-CROSS_COMPILE=${CROSS_COMPILE:-i686-w64-mingw32-}
-CC="${CROSS_COMPILE}gcc"
+# Toolchain/flags, all overridable from the environment, e.g.:
+#   CROSS_COMPILE=i486-w64-mingw32- ./build.sh
+#   CC=clang CFLAGS="-O2 -march=i486" LDFLAGS="-L/opt/lib" ./build.sh
+#   STRIP=: ./build.sh            (skip stripping)
+# CFLAGS/LDFLAGS/HOSTCFLAGS replace the defaults below; CPPFLAGS and
+# EXTRA_CFLAGS/EXTRA_LDFLAGS are appended. BB_CFLAGS (include paths and
+# defines) is always applied.
+CROSS_COMPILE=${CROSS_COMPILE-i686-w64-mingw32-}
 
-WINDRES="${CROSS_COMPILE}windres"
-if ! command -v "$WINDRES"; then
-	WINDRES="windres"
-	command -v "$WINDRES"
-fi
+pick_tool() {
+	if command -v "${CROSS_COMPILE}$1" >/dev/null 2>&1; then
+		echo "${CROSS_COMPILE}$1"
+	else
+		echo "$1"
+	fi
+}
 
-STRIP="${CROSS_COMPILE}strip"
-if ! command -v "$STRIP"; then
-	STRIP="strip"
-	command -v "$STRIP"
-fi
+CC=${CC:-${CROSS_COMPILE}gcc}
+WINDRES=${WINDRES:-$(pick_tool windres)}
+STRIP=${STRIP-$(pick_tool strip)}
+NM=${NM:-$(pick_tool nm)}
+export NM
 
 HOSTCC=${HOSTCC:-gcc}
-export HOSTCC
+HOSTCFLAGS=${HOSTCFLAGS--Wall -Wstrict-prototypes -O2 -fomit-frame-pointer}
+HOSTLDFLAGS=${HOSTLDFLAGS-}
+export HOSTCC HOSTCFLAGS HOSTLDFLAGS
 
 host_build() {
 	# some HOSTCC toolchains silently append .exe to -o names; fix
 	# up the name after instead of guessing behavior up front.
 	out="$1"; shift
-	$HOSTCC -Wall -Wstrict-prototypes -O2 -fomit-frame-pointer "$@" -o "$out"
+	$HOSTCC $HOSTCFLAGS "$@" $HOSTLDFLAGS -o "$out"
 	test -f "$out" || { test -f "$out.exe" && mv -f "$out.exe" "$out"; }
 }
 
-CFLAGS='-std=gnu99 -Iinclude -Ilibbb -include include/autoconf.h -D_GNU_SOURCE -DNDEBUG -D_LARGEFILE_SOURCE -D_LARGEFILE64_SOURCE -D_FILE_OFFSET_BITS=64 -D_TIME_BITS=64 -DMINGW_VER="" -march=i486 -mtune=i386 -mpreferred-stack-boundary=2 -malign-data=abi -Wall -Wshadow -Wwrite-strings -Wundef -Wstrict-prototypes -Wunused -Wunused-parameter -Wunused-function -Wunused-value -Wmissing-prototypes -Wmissing-declarations -Wno-format-security -Wdeclaration-after-statement -Wold-style-definition -finline-limit=0 -fno-builtin-strlen -fomit-frame-pointer -ffunction-sections -fno-guess-branch-probability -funsigned-char -static-libgcc -falign-functions=1 -falign-jumps=1 -falign-labels=1 -falign-loops=1 -fno-unwind-tables -fno-asynchronous-unwind-tables -fno-builtin-printf -Oz -Iwin32 -DHAVE_STRING_H=1 -DHAVE_CONFIG_H=0 -fno-builtin-stpcpy -fno-builtin-stpncpy -fno-ident -fno-builtin-strndup -fno-builtin-memmove'
+BB_CFLAGS='-std=gnu99 -Iinclude -Ilibbb -Iwin32 -include include/autoconf.h -D_GNU_SOURCE -DNDEBUG -D_LARGEFILE_SOURCE -D_LARGEFILE64_SOURCE -D_FILE_OFFSET_BITS=64 -D_TIME_BITS=64 -DMINGW_VER="" -DHAVE_STRING_H=1 -DHAVE_CONFIG_H=0'
+
+CFLAGS=${CFLAGS--march=i486 -mtune=i386 -mpreferred-stack-boundary=2 -malign-data=abi -Wall -Wshadow -Wwrite-strings -Wundef -Wstrict-prototypes -Wunused -Wunused-parameter -Wunused-function -Wunused-value -Wmissing-prototypes -Wmissing-declarations -Wno-format-security -Wdeclaration-after-statement -Wold-style-definition -finline-limit=0 -fno-builtin-strlen -fomit-frame-pointer -ffunction-sections -fno-guess-branch-probability -funsigned-char -falign-functions=1 -falign-jumps=1 -falign-labels=1 -falign-loops=1 -fno-unwind-tables -fno-asynchronous-unwind-tables -fno-builtin-printf -Oz -fno-builtin-stpcpy -fno-builtin-stpncpy -fno-ident -fno-builtin-strndup -fno-builtin-memmove}
+CFLAGS="$CFLAGS ${CPPFLAGS-} ${EXTRA_CFLAGS-}"
+
+LDFLAGS=${LDFLAGS--static-libgcc}
+LDFLAGS="$LDFLAGS ${EXTRA_LDFLAGS-}"
+LDLIBS=${LDLIBS-ws2_32 bcrypt secur32}
+WINDRESFLAGS=${WINDRESFLAGS-}
 
 # --- generated headers (all via the project's own sh scripts, no make) ---
 echo '#define BB_VER "1.39.0.git"' > include/BB_VER.h
@@ -61,6 +79,7 @@ host_build applets/applet_tables applets/applet_tables.c
 ./applets/applet_tables include/applet_tables.h include/NUM_APPLETS.h
 host_build applets/usage_pod -Iinclude -Iinclude applets/usage_pod.c
 
+LINK_CC="$CC"
 . ./vars.sh
 
 # --- compile every needed .c (list captured from the config's build) ---
@@ -400,22 +419,26 @@ for src in \
 	obj="${src%.c}.o"
 	base=$(basename "$src" .c)
 	echo "CC $obj"
-	$CC $CFLAGS -DKBUILD_BASENAME="\"$base\"" -DKBUILD_MODNAME="\"$base\"" -c -o "$obj" "$src"
+	$CC $BB_CFLAGS $CFLAGS -DKBUILD_BASENAME="\"$base\"" -DKBUILD_MODNAME="\"$base\"" -c -o "$obj" "$src"
 	OBJS="$OBJS $obj"
 done
 
 concurrent_wait
 
 echo "WINDRES win32/resources/resources.o"
-$WINDRES -D"BB_VER=1.39.0.git" -D"BB_VERSION=1" -D"BB_PATCHLEVEL=39" -D"BB_SUBLEVEL=0" -D"BB_EXTRAVERSION=0" \
+$WINDRES $WINDRESFLAGS -D"BB_VER=1.39.0.git" -D"BB_VERSION=1" -D"BB_PATCHLEVEL=39" -D"BB_SUBLEVEL=0" -D"BB_EXTRAVERSION=0" \
 	--include-dir=include --include-dir=win32/resources \
 	win32/resources/resources.rc win32/resources/resources.o
 OBJS="$OBJS win32/resources/resources.o"
 
 # --- link: reuse the project's own link-negotiation script (already plain sh) ---
-./scripts/trylink busybox_unstripped.exe "${CROSS_COMPILE}gcc" "$CFLAGS" "" "$OBJS" "" "ws2_32 bcrypt secur32" ""
-./scripts/generate_BUFSIZ.sh --post include/common_bufsiz.h
+./scripts/trylink busybox_unstripped.exe "$LINK_CC" "$BB_CFLAGS $CFLAGS" "$LDFLAGS" "$OBJS" "" "$LDLIBS" "${EXTRA_LDLIBS-}"
+CC="$LINK_CC" ./scripts/generate_BUFSIZ.sh --post include/common_bufsiz.h
 
-$STRIP -s --remove-section=.note --remove-section=.comment busybox_unstripped.exe -o busybox.exe
+if [ -n "$STRIP" ] && [ "$STRIP" != : ]; then
+	$STRIP -s --remove-section=.note --remove-section=.comment busybox_unstripped.exe -o busybox.exe
+else
+	cp busybox_unstripped.exe busybox.exe
+fi
 chmod a+x busybox.exe
 echo "built: busybox.exe"
