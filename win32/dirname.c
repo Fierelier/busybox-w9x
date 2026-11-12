@@ -10,7 +10,7 @@
 #include <libgen.h>
 #include <windows.h>
 
-#if defined(__MINGW64_VERSION_MAJOR) && __MINGW64_VERSION_MAJOR > 11
+#if (defined(__MINGW64_VERSION_MAJOR) && __MINGW64_VERSION_MAJOR > 11) || defined(__TINYC__)
 
 /* A 'directory separator' is a byte that equals 0x2F ('solidus' or more
  * commonly 'forward slash') or 0x5C ('reverse solidus' or more commonly

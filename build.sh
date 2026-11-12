@@ -25,6 +25,7 @@ test -f include/autoconf.h || {
 #   CROSS_COMPILE=i486-w64-mingw32- ./build.sh
 #   CC=clang CFLAGS="-O2 -march=i486" LDFLAGS="-L/opt/lib" ./build.sh
 #   STRIP=: ./build.sh            (skip stripping)
+#   CC=i386-win32-tcc ./build.sh  (Tiny C Compiler, detected via __TINYC__)
 # CFLAGS/LDFLAGS/HOSTCFLAGS replace the defaults below; CPPFLAGS and
 # EXTRA_CFLAGS/EXTRA_LDFLAGS are appended. BB_CFLAGS (include paths and
 # defines) is always applied.
@@ -39,8 +40,19 @@ pick_tool() {
 }
 
 CC=${CC:-${CROSS_COMPILE}gcc}
-WINDRES=${WINDRES:-$(pick_tool windres)}
-STRIP=${STRIP-$(pick_tool strip)}
+
+IS_TCC=0
+if $CC -dM -E - </dev/null 2>/dev/null | grep -q __TINYC__; then
+	IS_TCC=1
+fi
+
+if [ $IS_TCC = 1 ]; then
+	WINDRES=${WINDRES-:}
+	STRIP=${STRIP-:}
+else
+	WINDRES=${WINDRES:-$(pick_tool windres)}
+	STRIP=${STRIP-$(pick_tool strip)}
+fi
 NM=${NM:-$(pick_tool nm)}
 export NM
 
@@ -58,6 +70,15 @@ host_build() {
 }
 
 BB_CFLAGS='-std=gnu99 -Iinclude -Ilibbb -Iwin32 -include include/autoconf.h -D_GNU_SOURCE -DNDEBUG -D_LARGEFILE_SOURCE -D_LARGEFILE64_SOURCE -D_FILE_OFFSET_BITS=64 -D_TIME_BITS=64 -DMINGW_VER="" -DHAVE_STRING_H=1 -DHAVE_CONFIG_H=0'
+
+TCC_SRCS=
+if [ $IS_TCC = 1 ]; then
+	BB_CFLAGS="-Iwin32/tcc $BB_CFLAGS -D__MINGW32__"
+	TCC_SRCS=win32/tcc/compat.c
+	CFLAGS=${CFLAGS--funsigned-char}
+	LDFLAGS=${LDFLAGS--Lwin32/tcc/lib}
+	LDLIBS=${LDLIBS-ws2_32 user32 advapi32}
+fi
 
 CFLAGS=${CFLAGS--march=i486 -mtune=i386 -mpreferred-stack-boundary=2 -malign-data=abi -Wall -Wshadow -Wwrite-strings -Wundef -Wstrict-prototypes -Wunused -Wunused-parameter -Wunused-function -Wunused-value -Wmissing-prototypes -Wmissing-declarations -Wno-format-security -Wdeclaration-after-statement -Wold-style-definition -finline-limit=0 -fno-builtin-strlen -fomit-frame-pointer -ffunction-sections -fno-guess-branch-probability -funsigned-char -falign-functions=1 -falign-jumps=1 -falign-labels=1 -falign-loops=1 -fno-unwind-tables -fno-asynchronous-unwind-tables -fno-builtin-printf -Oz -fno-builtin-stpcpy -fno-builtin-stpncpy -fno-ident -fno-builtin-strndup -fno-builtin-memmove}
 CFLAGS="$CFLAGS ${CPPFLAGS-} ${EXTRA_CFLAGS-}"
@@ -415,6 +436,7 @@ for src in \
 	win32/timegm.c \
 	win32/uname.c \
 	win32/winansi.c \
+	$TCC_SRCS \
 ; do
 	obj="${src%.c}.o"
 	base=$(basename "$src" .c)
@@ -425,11 +447,13 @@ done
 
 concurrent_wait
 
-echo "WINDRES win32/resources/resources.o"
-$WINDRES $WINDRESFLAGS -D"BB_VER=1.39.0.git" -D"BB_VERSION=1" -D"BB_PATCHLEVEL=39" -D"BB_SUBLEVEL=0" -D"BB_EXTRAVERSION=0" \
-	--include-dir=include --include-dir=win32/resources \
-	win32/resources/resources.rc win32/resources/resources.o
-OBJS="$OBJS win32/resources/resources.o"
+if [ -n "$WINDRES" ] && [ "$WINDRES" != : ]; then
+	echo "WINDRES win32/resources/resources.o"
+	$WINDRES $WINDRESFLAGS -D"BB_VER=1.39.0.git" -D"BB_VERSION=1" -D"BB_PATCHLEVEL=39" -D"BB_SUBLEVEL=0" -D"BB_EXTRAVERSION=0" \
+		--include-dir=include --include-dir=win32/resources \
+		win32/resources/resources.rc win32/resources/resources.o
+	OBJS="$OBJS win32/resources/resources.o"
+fi
 
 # --- link: reuse the project's own link-negotiation script (already plain sh) ---
 ./scripts/trylink busybox_unstripped.exe "$LINK_CC" "$BB_CFLAGS $CFLAGS" "$LDFLAGS" "$OBJS" "" "$LDLIBS" "${EXTRA_LDLIBS-}"

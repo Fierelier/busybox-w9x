@@ -38,7 +38,7 @@
 # endif
 #endif
 
-#if !__GNUC_PREREQ(2,7)
+#if !__GNUC_PREREQ(2,7) && !defined(__TINYC__)
 # ifndef __attribute__
 #  define __attribute__(x)
 # endif
@@ -504,6 +504,10 @@ typedef unsigned smalluint;
 # undef HAVE_UNLOCKED_STDIO
 # undef HAVE_UNLOCKED_LINE_OPS
 # undef HAVE_PRINTF_PERCENTM
+# if defined(__TINYC__)
+#  undef HAVE_MEMPCPY
+#  undef HAVE_USLEEP
+# endif
 #endif
 
 #if defined(__WATCOMC__)

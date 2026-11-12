@@ -530,7 +530,7 @@ static void conv_c(PR *pr, unsigned char *p)
 		*pr->cchar = 'c';
 		printf(pr->fmt, *p);
 	} else {
-#if defined(__i386__) || defined(__x86_64__)
+#if (defined(__i386__) || defined(__x86_64__)) && !defined(__TINYC__)
 		/* Abuse partial register operations */
 		uint32_t buf;
 		unsigned n = *p;

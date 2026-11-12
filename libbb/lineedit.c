@@ -412,7 +412,11 @@ static void save_string(char *dst, unsigned maxsize)
 # endif
 # define BB_PUTCHAR(c) bb_putchar_stderr(c)
 /* Should never be called: */
+# if defined(__TINYC__)
+static int adjust_width_and_validate_wc(unsigned *width_adj, int wc) { return wc; }
+# else
 int adjust_width_and_validate_wc(unsigned *width_adj, int wc);
+# endif
 #endif
 
 

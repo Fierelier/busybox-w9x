@@ -24,6 +24,10 @@ This is an experimental fork of [busybox-w32](https://github.com/rmyorston/busyb
 
 Example: `CROSS_COMPILE=i486-w64-mingw32- CFLAGS="-O2 -march=i486" STRIP=: ./build.sh`
 
+#### Building with tcc
+
+`CC=i386-win32-tcc ./build.sh` (or `CC=tcc` with a 32-bit Windows tcc). tcc is detected through `__TINYC__`, which adds `win32/tcc` (wrappers for headers tcc's Windows headers lack, `compat.c` for `getopt_long`/`strtok_r`/`strnlen`/`ffs`, and an `advapi32.def`). Defaults then become `CFLAGS=-funsigned-char`, `LDFLAGS=-Lwin32/tcc/lib`, `LDLIBS="ws2_32 user32 advapi32"`, and no strip/windres, since tcc can't link windres output, so the exe has no icon/version resource. `HOSTCC` still has to be a compiler for the build machine. The binary is about 1.6 MB instead of 620 KB.
+
 ### Known issues
 
 - `ls -lh` shows weird file size units

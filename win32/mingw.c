@@ -36,6 +36,26 @@ int _dowildcard = 0;
 int _fmode = _O_BINARY;
 #endif
 
+#if defined(__TINYC__) && ENABLE_GLOBBING
+int __cdecl __getmainargs(int *, char ***, char ***, int, void *);
+
+static void __attribute__((constructor)) tcc_setargv(void)
+{
+	char *glob, **env;
+	int startinfo = 0;
+
+	glob = getenv("BB_GLOBBING");
+	if (glob) {
+		if (strcmp(glob, "0") == 0)
+			return;
+	}
+	else {
+		setenv("BB_GLOBBING", "0", TRUE);
+	}
+	__getmainargs(&__argc, &__argv, &env, 1, &startinfo);
+}
+#endif
+
 #if !defined(__MINGW64_VERSION_MAJOR)
 #if ENABLE_GLOBBING
 int _CRT_glob = 1;

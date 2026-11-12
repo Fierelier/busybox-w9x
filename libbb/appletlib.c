@@ -1379,7 +1379,10 @@ int main(int argc UNUSED_PARAM, char **argv)
 	change_critical_error_dialogs(getenv(BB_CRITICAL_ERROR_DIALOGS));
 #endif
 
-#if defined(__MINGW64_VERSION_MAJOR)
+#if defined(__TINYC__)
+	_fmode = _O_BINARY;
+#endif
+#if defined(__MINGW64_VERSION_MAJOR) || defined(__TINYC__)
 	if ( stdin ) {
 		_setmode(fileno(stdin), _O_BINARY);
 	}

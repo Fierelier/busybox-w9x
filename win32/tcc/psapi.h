@@ -1,0 +1,29 @@
+#ifndef BB_TCC_PSAPI_H
+#define BB_TCC_PSAPI_H
+#include <windows.h>
+typedef struct _PERFORMANCE_INFORMATION {
+	DWORD cb;
+	SIZE_T CommitTotal;
+	SIZE_T CommitLimit;
+	SIZE_T CommitPeak;
+	SIZE_T PhysicalTotal;
+	SIZE_T PhysicalAvailable;
+	SIZE_T SystemCache;
+	SIZE_T KernelTotal;
+	SIZE_T KernelPaged;
+	SIZE_T KernelNonpaged;
+	SIZE_T PageSize;
+	DWORD HandleCount;
+	DWORD ProcessCount;
+	DWORD ThreadCount;
+} PERFORMANCE_INFORMATION, *PPERFORMANCE_INFORMATION;
+typedef struct _ENUM_PAGE_FILE_INFORMATION {
+	DWORD cb;
+	DWORD Reserved;
+	SIZE_T TotalSize;
+	SIZE_T TotalInUse;
+	SIZE_T PeakUsage;
+} ENUM_PAGE_FILE_INFORMATION, *PENUM_PAGE_FILE_INFORMATION;
+typedef BOOL (CALLBACK *PENUM_PAGE_FILE_CALLBACKA)(LPVOID, PENUM_PAGE_FILE_INFORMATION, LPCSTR);
+#define PENUM_PAGE_FILE_CALLBACK PENUM_PAGE_FILE_CALLBACKA
+#endif
