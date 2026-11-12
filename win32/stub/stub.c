@@ -31,6 +31,7 @@ void stub_main(void)
 	char *cmd;
 	char *rest;
 	char *name;
+	char *app;
 	char *dot;
 	char *w;
 	DWORD n;
@@ -38,6 +39,8 @@ void stub_main(void)
 	int i;
 	STARTUPINFOA si;
 	PROCESS_INFORMATION pi;
+	WIN32_FIND_DATAA fd;
+	HANDLE h;
 	n = GetModuleFileNameA(NULL, self, sizeof(self));
 	if (!n || n >= sizeof(self))
 		ExitProcess(255);
@@ -46,14 +49,23 @@ void stub_main(void)
 	for (i = 0; self[i]; i++)
 		if (self[i] == '\\' || self[i] == '/')
 			name = self + i + 1;
+	app = name;
+	h = FindFirstFileA(self, &fd);
+	if (h != INVALID_HANDLE_VALUE) {
+		FindClose(h);
+		app = fd.cFileName;
+	}
 	dot = 0;
-	for (i = 0; name[i]; i++)
-		if (name[i] == '.')
-			dot = name + i;
+	for (i = 0; app[i]; i++) {
+		if (app[i] >= 'A' && app[i] <= 'Z')
+			app[i] += 'a' - 'A';
+		if (app[i] == '.')
+			dot = app + i;
+	}
 	if (dot)
 		*dot = 0;
 	rest = skip_arg0(GetCommandLineA());
-	cmd = (char *)HeapAlloc(GetProcessHeap(), 0, (SIZE_T)(len_of(self) + len_of(rest) + 32));
+	cmd = (char *)HeapAlloc(GetProcessHeap(), 0, (SIZE_T)(len_of(self) + len_of(app) + len_of(rest) + 32));
 	if (!cmd)
 		ExitProcess(255);
 	w = cmd;
@@ -64,8 +76,8 @@ void stub_main(void)
 		*w++ = "busybox.exe"[i];
 	*w++ = '"';
 	*w++ = ' ';
-	for (i = 0; name[i]; i++)
-		*w++ = name[i];
+	for (i = 0; app[i]; i++)
+		*w++ = app[i];
 	if (*rest) {
 		*w++ = ' ';
 		for (i = 0; rest[i]; i++)
