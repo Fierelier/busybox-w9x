@@ -52,6 +52,7 @@ Example: `CROSS_COMPILE=i486-w64-mingw32- CFLAGS="-O2 -march=i486" STRIP=: ./bui
 - **`include/libbb.h`** — `LL_FMT` uses `"I64"` on msvcrt even with `MINGW_TIME32` (fixes `ls -lh` units).
 - **`win32/mingw.c`**, **`include/mingw.h`** — `time_t` is always 64-bit under `MINGW_TIME32`; `mingw_time()` uses `GetSystemTime` plus a days-from-civil conversion (`utcdate_to_unix`).
 - **`miscutils/less.c`** — no `ESC[?1049h/l` under `MINGW_TIME32` (fullscreen switch under NANSI).
+- **`libbb/appletlib.c`, `win32/stub/stub.c`** — `busybox --install` writes a 3.5 KB launcher stub (from [cordev32](https://git.lumen.sh/Fierelier/cordev32)) for each applet when hardlinks don't work (Win9x, FAT) and the target directory is the one `busybox.exe` is in, instead of a full copy of `busybox.exe` per applet. Other directories still get copies. Existing files are skipped, and `--uninstall` also removes stubs.
 - **`build.sh`, `clean.sh`, `vars.sh`, `configs/win9x_defconfig`** — new flat non-kconfig build path and matching defconfig for this target.
 
 Note that the rest of this README contains information concerning the original busybox-w32. **Do not bother the author of the original project with any issues stemming from this fork.**

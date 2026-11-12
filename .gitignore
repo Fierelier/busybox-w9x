@@ -69,3 +69,6 @@ TAGS
 # release description for tarball
 #
 .frp_describe
+
+/include/applet_stub.h
+/win32/stub/stub.exe

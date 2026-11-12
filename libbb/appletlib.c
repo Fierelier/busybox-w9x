@@ -779,6 +779,79 @@ static const char *const install_dir[] ALIGN_PTR = {
 #  endif
 };
 
+#  if ENABLE_PLATFORM_MINGW32
+#   include "applet_stub.h"
+
+static int write_applet_stub(const char *path)
+{
+	int fd = open(path, O_WRONLY | O_CREAT | O_EXCL | O_BINARY, 0755);
+
+	if (fd < 0)
+		return -1;
+	if (full_write(fd, applet_stub, sizeof(applet_stub)) != sizeof(applet_stub)) {
+		close(fd);
+		unlink(path);
+		return -1;
+	}
+	return close(fd);
+}
+
+static int stub_usable(const char *busybox, const char *dir)
+{
+	char *bbdir, *real_bbdir, *real_dir;
+	int ok;
+
+	if (!dir || strcasecmp(bb_basename(busybox), "busybox.exe") != 0)
+		return 0;
+	bbdir = dirname(xstrdup(busybox));
+	real_bbdir = xmalloc_realpath(bbdir);
+	real_dir = xmalloc_realpath(dir);
+	ok = real_bbdir && real_dir && strcasecmp(real_bbdir, real_dir) == 0;
+	free(real_dir);
+	free(real_bbdir);
+	free(bbdir);
+	return ok;
+}
+
+static int is_applet_stub(const char *path)
+{
+	char buf[sizeof(applet_stub) + 1];
+	int fd, n;
+
+	fd = open(path, O_RDONLY | O_BINARY);
+	if (fd < 0)
+		return 0;
+	n = full_read(fd, buf, sizeof(buf));
+	close(fd);
+	return n == sizeof(applet_stub) && memcmp(buf, applet_stub, n) == 0;
+}
+
+static void uninstall_stubs(const char *busybox, int dry_run)
+{
+	char *dir = dirname(xstrdup(busybox));
+	const char *appname = applet_names;
+	unsigned i;
+
+	for (i = 0; i < ARRAY_SIZE(applet_main); i++) {
+		char *fpc = xasprintf("%s/%s.exe", dir, appname);
+
+		if (is_applet_stub(fpc)) {
+			if (dry_run) {
+				full_write1_str(fpc);
+				full_write1_str("\n");
+			}
+			else if (unlink(fpc) != 0) {
+				bb_simple_perror_msg(fpc);
+			}
+		}
+		free(fpc);
+		while (*appname++ != '\0')
+			continue;
+	}
+	free(dir);
+}
+#  endif
+
 /* create (sym)links for each applet */
 static void install_links(const char *busybox, int use_symbolic_links,
 		char *custom_install_dir)
@@ -793,6 +866,7 @@ static void install_links(const char *busybox, int use_symbolic_links,
 	int rc;
 #  if ENABLE_PLATFORM_MINGW32
 	const char *sd = "";
+	int use_stub;
 
 	if (custom_install_dir != NULL) {
 		bb_make_directory(custom_install_dir, 0755, FILEUTILS_RECUR);
@@ -805,6 +879,10 @@ static void install_links(const char *busybox, int use_symbolic_links,
 			free(fpc);
 		}
 	}
+#  endif
+
+#  if ENABLE_PLATFORM_MINGW32
+	use_stub = stub_usable(busybox, custom_install_dir);
 #  endif
 
 	lf = link;
@@ -824,11 +902,20 @@ static void install_links(const char *busybox, int use_symbolic_links,
 		// debug: bb_error_msg("%slinking %s to busybox",
 		//		use_symbolic_links ? "sym" : "", fpc);
 		rc = lf(busybox, fpc);
-		if (rc != 0 && errno != EEXIST) {
+		if (rc != 0 && errno != EEXIST
+#  if ENABLE_PLATFORM_MINGW32
+				&& access(fpc, F_OK) != 0
+#  endif
+		) {
 			if (lf == link) {
 				/* hardlinks unsupported on FAT/FAT32 - fall
-				 * back to a plain copy. copy_file() reports
-				 * its own error on failure. */
+				 * back to a small launcher stub if busybox.exe
+				 * is in the same directory, otherwise a plain
+				 * copy. copy_file() reports its own error on
+				 * failure. */
+#  if ENABLE_PLATFORM_MINGW32
+				if (!use_stub || write_applet_stub(fpc) != 0)
+#  endif
 				copy_file(busybox, fpc, FILEUTILS_PRESERVE_STATUS);
 			} else {
 				bb_simple_perror_msg(fpc);
@@ -1124,6 +1211,7 @@ int busybox_main(int argc UNUSED_PARAM, char **argv)
 			}
 			file = NULL;
 		}
+		uninstall_stubs(argv[2], dry_run);
 		return 0;
 	}
 #endif

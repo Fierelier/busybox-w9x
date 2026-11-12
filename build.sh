@@ -88,11 +88,29 @@ LDFLAGS="$LDFLAGS ${EXTRA_LDFLAGS-}"
 LDLIBS=${LDLIBS-ws2_32 bcrypt secur32}
 WINDRESFLAGS=${WINDRESFLAGS-}
 
+# applet launcher stub (win32/stub/stub.c), written by "busybox --install"
+# where hardlinks don't work (Win9x, FAT)
+if [ $IS_TCC = 1 ]; then
+	STUB_CFLAGS=${STUB_CFLAGS--O2 -Wall}
+	STUB_LDFLAGS=${STUB_LDFLAGS--nostdlib -Wl,-subsystem=console -Wl,-e=stub_main}
+else
+	STUB_CFLAGS=${STUB_CFLAGS--Os -Wall -march=i486 -fno-stack-protector -fno-builtin -ffreestanding -fno-tree-loop-distribute-patterns -fno-asynchronous-unwind-tables}
+	STUB_LDFLAGS=${STUB_LDFLAGS--nostdlib -nostartfiles -s -mconsole -Wl,-e,_stub_main -Wl,--major-subsystem-version,4,--minor-subsystem-version,0,--major-os-version,4,--minor-os-version,0}
+fi
+
 # --- generated headers (all via the project's own sh scripts, no make) ---
 echo '#define BB_VER "1.39.0.git"' > include/BB_VER.h
 ./scripts/mkconfigs include/bbconfigopts.h include/bbconfigopts_bz2.h
 ./scripts/generate_BUFSIZ.sh include/common_bufsiz.h
 ./scripts/embedded_scripts include/embedded_scripts.h "$TOP/embed" "$TOP/applets_sh"
+
+echo "CC win32/stub/stub.exe"
+$CC $STUB_CFLAGS $STUB_LDFLAGS -o win32/stub/stub.exe win32/stub/stub.c -lkernel32
+{
+	echo 'static const unsigned char applet_stub[] = {'
+	od -An -v -tx1 win32/stub/stub.exe | sed -e 's/[ 	]*$//' -e 's/^[ 	]*//' -e 's/ *\([0-9a-f][0-9a-f]\)/0x\1,/g'
+	echo '};'
+} > include/applet_stub.h
 
 host_build applets/usage -Iinclude -Iinclude applets/usage.c
 ./applets/usage_compressed include/usage_compressed.h applets
